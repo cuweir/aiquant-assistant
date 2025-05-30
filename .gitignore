@@ -1,0 +1,92 @@
+# --- START OF FILE .gitignore ---
+
+# Environment
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example  # If you have an example env file, don't ignore it
+
+# Python
+# -----------------------------------------------------------------------------
+*.py[cod]
+*$py.class
+*.so
+__pycache__/
+.python-version
+*.egg-info/
+*.egg
+dist/
+build/
+wheels/
+*.tar.gz
+*.whl
+*.zip
+# Virtual environment
+# If you create your venv in the project root. Common names:
+venv/
+.venv/
+env/
+.env/
+ENV/
+# If your venv is named differently, add that name here.
+# Example: my_quant_env/
+
+# IDEs and Editors
+# -----------------------------------------------------------------------------
+.idea/ # JetBrains IDEs (PyCharm, IntelliJ)
+.vscode/ # Visual Studio Code (unless you want to share launch.json, tasks.json)
+# If sharing .vscode settings:
+# .vscode/*
+# !.vscode/settings.json
+# !.vscode/tasks.json
+# !.vscode/launch.json
+# !.vscode/extensions.json
+*.sublime-project
+*.sublime-workspace
+nbproject/ # NetBeans
+*.swp # Vim swap files
+*~ # Backup files
+
+# Operating System Files
+# -----------------------------------------------------------------------------
+.DS_Store # macOS
+Thumbs.db # Windows
+ehthumbs.db # Windows
+Desktop.ini # Windows
+
+# Test & Coverage
+# -----------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+nosetests.xml
+*.cover
+
+# Logs and Databases
+# -----------------------------------------------------------------------------
+*.log
+*.sqlite
+*.sqlite3
+*.db
+# Add specific log file names if they are consistent
+
+# Temporary files and build artifacts from other tools
+# -----------------------------------------------------------------------------
+# Example: If you use Jupyter notebooks and don't want to commit checkpoints
+.ipynb_checkpoints/
+
+# Specific to this project if needed
+# -----------------------------------------------------------------------------
+# e.g., if you generate large data files locally that shouldn't be committed
+# local_data_output/
+# *.csv # If you generate many csv files that are results not source data
+
+# Secrets - although .env should cover most, be explicit if other files exist
+# -----------------------------------------------------------------------------
+# secrets.json
+# credentials.yaml
+# *.pem
+# *.key
+
+# --- END OF FILE .gitignore ---

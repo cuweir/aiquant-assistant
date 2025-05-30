@@ -1,0 +1,44 @@
+from typing import Union
+
+import ccxt.async_support as ccxt # Use async version of ccxt
+import pandas as pd
+from ..core.config import settings
+
+class DataFetcher:
+    def __init__(self):
+        self.exchange_id = 'binance' # Or your preferred exchange
+        self.exchange_class = getattr(ccxt, self.exchange_id)
+        self.exchange = self.exchange_class({
+            'apiKey': settings.BINANCE_API_KEY,
+            'secret': settings.BINANCE_API_SECRET,
+            'enableRateLimit': True, # CCXT built-in rate limiter
+            # 'options': {'defaultType': 'future'} # if you are trading futures
+        })
+        print(f"Initialized {self.exchange_id} Data Fetcher (Read-Only).")
+
+    async def fetch_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> Union[pd.DataFrame, None]:
+        try:
+            # For USDT-margined perpetuals, CCXT often expects symbol format like "BTC/USDT:USDT"
+            # For spot, "BTC/USDT" is fine.
+            # You might need to adjust symbol formatting based on exchange.load_markets() output.
+            print(f"Fetching OHLCV for {symbol} ({timeframe})...")
+            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            if ohlcv:
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+                return df
+            return None
+        except ccxt.NetworkError as e:
+            print(f"CCXT Network Error fetching {symbol}: {e}")
+        except ccxt.ExchangeError as e:
+            print(f"CCXT Exchange Error fetching {symbol}: {e}")
+        except Exception as e:
+            print(f"General Error fetching {symbol}: {e}")
+        return None
+
+    async def close_exchange(self):
+        await self.exchange.close()
+
+# Global instance
+data_fetcher_instance = DataFetcher()

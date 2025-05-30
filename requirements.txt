@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+ccxt
+pandas
+pandas-ta
+openai
+httpx
+google-generativeai
