@@ -49,7 +49,7 @@ nbproject/ # NetBeans
 
 # Operating System Files
 # -----------------------------------------------------------------------------
-.DS_Store # macOS
+*.DS_Store # macOS
 Thumbs.db # Windows
 ehthumbs.db # Windows
 Desktop.ini # Windows
