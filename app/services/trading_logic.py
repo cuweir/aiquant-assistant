@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import pandas as pd
-import pandas_ta as ta # For technical indicators like RSI
+import pandas_ta as ta  # For technical indicators like RSI
+# Make sure this import matches your file structure for data_fetcher
+# If data_fetcher.py is in the same 'services' directory:
 from .data_fetcher import data_fetcher_instance
-from ..core.llm_client import llm_client_instance
+# If llm_client.py is in 'core' directory:
+from ..core.llm_client import llm_client_instance  # This was your original import
 from ..core.config import settings
+import datetime  # For consistent timestamping if needed, pandas uses it too.
 
 # --- Storage for recent AI analysis (in-memory for simplicity) ---
-# In a real app, this would be a database or a more robust cache.
-ai_analysis_cache = {} # Key: symbol_timeframe_signaltype, Value: analysis text
+ai_analysis_cache = {}  # Key: symbol_timeframe_signaltype, Value: analysis dict
+
 
 class TradingLogicService:
+    # No __init__ needed in your version as llm_client_instance is global
+
     async def calculate_rsi(self, df: pd.DataFrame, period: int = settings.RSI_PERIOD) -> pd.Series | None:
         if df is not None and 'close' in df.columns and len(df) >= period:
             return df.ta.rsi(length=period)
@@ -21,28 +27,41 @@ class TradingLogicService:
         Checks for RSI overbought/oversold conditions.
         If a condition is met, it prepares data and a prompt for LLM analysis.
         """
+        print(
+            f"[{pd.Timestamp.now(tz='UTC')}] INFO: Checking signal for {symbol} on timeframe {timeframe}")  # Added log
+
         df = await data_fetcher_instance.fetch_ohlcv(symbol, timeframe, limit=100 + settings.RSI_PERIOD)
         if df is None or df.empty:
+            print(
+                f"[{pd.Timestamp.now(tz='UTC')}] WARNING: No OHLCV data fetched for {symbol} on {timeframe}.")  # Changed to print WARNING
             return None
 
         rsi_series = await self.calculate_rsi(df)
         if rsi_series is None or rsi_series.empty:
+            print(
+                f"[{pd.Timestamp.now(tz='UTC')}] WARNING: Could not calculate RSI for {symbol} on {timeframe}.")  # Changed to print WARNING
             return None
 
         latest_rsi = rsi_series.iloc[-1]
         signal_type = None
         current_price = df['close'].iloc[-1]
 
+        print(
+            f"[{pd.Timestamp.now(tz='UTC')}] INFO: Data for {symbol} ({timeframe}): Latest RSI = {latest_rsi:.2f}, Price = {current_price:.4f}")  # Added log
+
         if latest_rsi > settings.RSI_OVERBOUGHT:
             signal_type = "RSI_OVERBOUGHT"
         elif latest_rsi < settings.RSI_OVERSOLD:
             signal_type = "RSI_OVERSOLD"
+        else:  # Explicitly log when no signal is found
+            print(
+                f"[{pd.Timestamp.now(tz='UTC')}] INFO: No RSI signal for {symbol} ({timeframe}). RSI {latest_rsi:.2f} is within thresholds ({settings.RSI_OVERSOLD} - {settings.RSI_OVERBOUGHT}).")
 
         if signal_type:
-            print(f"Local signal triggered: {symbol} ({timeframe}) - {signal_type} at RSI {latest_rsi:.2f}, Price: {current_price}")
+            print(
+                f"[{pd.Timestamp.now(tz='UTC')}] INFO: Local signal triggered: {symbol} ({timeframe}) - {signal_type} at RSI {latest_rsi:.2f}, Price: {current_price:.4f}")
 
-            # Prepare data for LLM
-            ohlcv_summary = df.iloc[-10:].to_string() # Last 10 candles as string for LLM
+            ohlcv_summary = df.iloc[-10:].to_string()
 
             prompt = f"""
             Analyze the following cryptocurrency signal for {symbol} on the {timeframe} timeframe:
@@ -61,17 +80,35 @@ class TradingLogicService:
 
             Format your response clearly.
             """
+            # Using llm_client_instance directly as per your original structure
             ai_suggestion = await llm_client_instance.generate_analysis(prompt)
+
+            if ai_suggestion.lower().startswith("error:"):
+                print(
+                    f"[{pd.Timestamp.now(tz='UTC')}] ERROR: LLM failed to generate analysis for {symbol} ({timeframe}), Signal: {signal_type}. LLM Response: {ai_suggestion}")
+                # Decide if you want to cache this error or return None.
+                # If you return None here, main.py will raise the 404.
+                # return None # <--- Uncomment if you want LLM failure to result in the 404 from client
+
             cache_key = f"{symbol}_{timeframe}_{signal_type}"
-            ai_analysis_cache[cache_key] = {
-                "timestamp": pd.Timestamp.now(),
+            # Ensure consistent timestamping for the cache
+            timestamp_now = pd.Timestamp.now(tz='UTC')
+            analysis_data = {
+                "timestamp": timestamp_now,  # Use a consistent, timezone-aware timestamp
                 "local_signal": signal_type,
                 "rsi": latest_rsi,
                 "price": current_price,
-                "prompt": prompt, # For debugging
-                "ai_analysis": ai_suggestion
+                "prompt": prompt,
+                "ai_analysis": ai_suggestion,
+                "symbol": symbol,  # Adding these as they are useful for the response model
+                "timeframe": timeframe
             }
-            return ai_analysis_cache[cache_key]
+            ai_analysis_cache[cache_key] = analysis_data
+            print(
+                f"[{pd.Timestamp.now(tz='UTC')}] INFO: AI analysis completed and cached for {symbol} ({timeframe}), Signal: {signal_type}.")
+            return analysis_data
+
+        # This part is reached if signal_type remained None
         return None
 
     async def get_cached_analysis(self, symbol: str, timeframe: str, signal_type: str):
@@ -80,6 +117,7 @@ class TradingLogicService:
 
     async def get_all_cached_analyses(self):
         return ai_analysis_cache
+
 
 # Global instance
 trading_logic_service_instance = TradingLogicService()

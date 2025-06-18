@@ -3,7 +3,7 @@ import asyncio
 import json
 import time
 
-API_BASE_URL = "http://127.0.0.1:8000"  # Default FastAPI server address
+API_BASE_URL = "http://REDACTED-HOST:8000"  # Default FastAPI server address
 
 
 async def display_all_analyses():
