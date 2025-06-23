@@ -15,7 +15,7 @@ class GeminiLLMStrategy(LLMStrategy):
             "temperature": 0.5,
             "top_p": 1,
             "top_k": 1,
-            "max_output_tokens": 800, # Increased slightly for comprehensive analysis
+            "max_output_tokens": 2048, # Increased slightly for comprehensive analysis
         }
         self.safety_settings = safety_settings or [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
