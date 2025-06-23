@@ -1,40 +1,50 @@
 import pandas as pd
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
 import asyncio
 
 from .core.config import settings
-from .services.data_fetcher import data_fetcher_instance, DataFetcher
-from .services.trading_logic import trading_logic_service_instance, TradingLogicService, ai_analysis_cache
-from .core.llm_client import llm_client_instance, LLMClient
+from .services.data_fetcher import data_fetcher_instance
+from .services.trading_logic import trading_logic_service_instance  # This instance is now created with the strategy
 from .models.schemas import SignalInput, AIAnalysisOutput, AllAnalysesOutput
 
 
-# Lifespan manager for startup and shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Initialize resources
     print("Application startup...")
-    # You could initialize data_fetcher_instance and llm_client_instance here if not global
-    # Start background tasks if any
-    app.state.data_fetcher = data_fetcher_instance  # Make accessible via app.state
-    app.state.llm_client = llm_client_instance
-    app.state.trading_logic = trading_logic_service_instance
+    # data_fetcher_instance is already initialized globally
+    # trading_logic_service_instance is also initialized globally, and its __init__ now sets up the LLM strategy
+    app.state.data_fetcher = data_fetcher_instance
+    app.state.trading_logic = trading_logic_service_instance  # This now has the LLM strategy
     app.state.monitoring_task = asyncio.create_task(monitor_markets_periodically())
-    print("Market monitoring task started.")
+    print(f"Market monitoring task started for symbols: {settings.SYMBOLS_TO_MONITOR}")
     yield
     # Shutdown: Cleanup resources
     print("Application shutdown...")
-    app.state.monitoring_task.cancel()
-    try:
-        await app.state.monitoring_task
-    except asyncio.CancelledError:
-        print("Market monitoring task cancelled.")
-    await app.state.data_fetcher.close_exchange()
-    await app.state.llm_client.close_http_client()
+    if app.state.monitoring_task:  # Check if task exists
+        app.state.monitoring_task.cancel()
+        try:
+            await app.state.monitoring_task
+        except asyncio.CancelledError:
+            print("Market monitoring task cancelled.")
+        except Exception as e:
+            print(f"Error during monitoring task shutdown: {e}")
+
+    if hasattr(app.state.data_fetcher, 'close_exchange'):  # Good practice to check
+        await app.state.data_fetcher.close_exchange()
+
+    # Close LLM resources via the trading_logic_service instance
+    if hasattr(app.state.trading_logic, 'close_llm_resources') and callable(
+            app.state.trading_logic.close_llm_resources):
+        await app.state.trading_logic.close_llm_resources()
+    else:
+        print(
+            "Trading logic service does not have a callable 'close_llm_resources' method or app.state.trading_logic not set.")
     print("Resources cleaned up.")
 
 
+# ... (rest of main.py - endpoints - should remain the same as your previous version) ...
+# Ensure your FastAPI app uses this lifespan manager:
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.PROJECT_VERSION,
@@ -43,29 +53,22 @@ app = FastAPI(
 
 
 async def monitor_markets_periodically():
-    """
-    Background task to periodically check for signals.
-    This is a simplified version. In a real app, you'd use a proper scheduler
-    or a more robust async loop management.
-    """
     while True:
-        print(f"\n[{pd.Timestamp.now()}] Running periodic market check...")
+        print(f"\n[{pd.Timestamp.now(tz='UTC')}] Running periodic market check (Comprehensive Analysis)...")
         try:
-            for symbol_ccxt_format in settings.SYMBOLS_TO_MONITOR:  # Use CCXT standard format
-                # Example: for spot "BTC/USDT", for futures "BTC/USDT:USDT"
-                # Ensure your SYMBOLS_TO_MONITOR list in config.py uses the correct CCXT format
-                # for the market type (spot/future) you intend to query.
-                print(f"Checking symbol: {symbol_ccxt_format}")
-                analysis_result = await trading_logic_service_instance.check_rsi_signal(
+            for symbol_ccxt_format in settings.SYMBOLS_TO_MONITOR:
+                print(f"Comprehensive check for symbol: {symbol_ccxt_format}")
+                analysis_result_dict = await trading_logic_service_instance.generate_comprehensive_analysis(
                     symbol=symbol_ccxt_format,
-                    timeframe=settings.RSI_TIMEFRAME
+                    timeframe=settings.DEFAULT_TIMEFRAME
                 )
-                if analysis_result:
-                    print(f"AI Analysis generated for {symbol_ccxt_format}:")
-                    # print(analysis_result.get('ai_analysis')) # Don't print full prompt in production
+                if analysis_result_dict:
+                    print(f"Comprehensive AI Analysis generated and cached for {symbol_ccxt_format}.")
         except Exception as e:
             print(f"Error in monitoring_markets_periodically: {e}")
-        await asyncio.sleep(60 * 5)  # Check every 5 minutes (adjust as needed)
+            import traceback
+            traceback.print_exc()
+        await asyncio.sleep(60 * 15)
 
 
 @app.get("/", summary="Root endpoint, returns project info")
@@ -73,61 +76,26 @@ async def read_root():
     return {"project": settings.PROJECT_NAME, "version": settings.PROJECT_VERSION}
 
 
-@app.post("/trigger-analysis", response_model=AIAnalysisOutput, summary="Manually trigger AI analysis for a symbol")
-async def trigger_ai_analysis(signal_input: SignalInput):
-    """
-    Manually triggers a local signal check and subsequent AI analysis if a signal is found.
-    This is more for testing; the primary analysis is done by the background task.
-    """
-    analysis_result = await trading_logic_service_instance.check_rsi_signal(
-        symbol=signal_input.symbol,  # Expect CCXT format, e.g., "BTC/USDT" or "BTC/USDT:USDT"
+@app.post("/trigger-analysis", response_model=AIAnalysisOutput, summary="Manually trigger comprehensive AI analysis")
+async def trigger_comprehensive_ai_analysis(signal_input: SignalInput):
+    analysis_result_dict = await trading_logic_service_instance.generate_comprehensive_analysis(
+        symbol=signal_input.symbol,
         timeframe=signal_input.timeframe
     )
-    if not analysis_result:
+    if not analysis_result_dict:
         raise HTTPException(status_code=404,
-                            detail=f"No local signal found or AI analysis could not be generated for {signal_input.symbol} on {signal_input.timeframe}")
-
-    # Convert dict to Pydantic model for response
-    return AIAnalysisOutput(
-        timestamp=analysis_result["timestamp"],
-        symbol=signal_input.symbol,  # Use the input symbol for consistency in response
-        timeframe=signal_input.timeframe,
-        local_signal=analysis_result["local_signal"],
-        rsi=analysis_result["rsi"],
-        price=analysis_result["price"],
-        ai_analysis=analysis_result["ai_analysis"]
-        # prompt=analysis_result.get("prompt") # Optionally include
-    )
+                            detail=f"Comprehensive analysis could not be generated for {signal_input.symbol} on {signal_input.timeframe}")
+    return AIAnalysisOutput(**analysis_result_dict)
 
 
-@app.get("/get-latest-analysis", response_model=AIAnalysisOutput, summary="Get latest cached AI analysis")
-async def get_latest_analysis(symbol: str, timeframe: str, signal_type: str):
-    # Note: This requires knowing the signal_type. A better approach might be to
-    # just get the latest for a symbol/timeframe regardless of signal_type.
-    cached = await trading_logic_service_instance.get_cached_analysis(symbol, timeframe, signal_type)
-    if not cached:
-        raise HTTPException(status_code=404, detail="No cached analysis found for the given criteria.")
-    return AIAnalysisOutput(**cached)
-
-
-@app.get("/get-all-analyses", response_model=AllAnalysesOutput, summary="Get all cached AI analyses")
+@app.get("/get-all-analyses", response_model=AllAnalysesOutput, summary="Get all cached comprehensive AI analyses")
 async def get_all_analyses_endpoint():
-    all_data = await trading_logic_service_instance.get_all_cached_analyses()
-    # Pydantic validation will occur if the structure matches
-    # We might need to re-structure 'all_data' if it's not directly compatible
-    # For now, assume ai_analysis_cache stores data in AIAnalysisOutput compatible dicts
-    valid_analyses = {}
-    for key, value_dict in all_data.items():
+    all_data_dicts = await trading_logic_service_instance.get_all_cached_analyses()
+    validated_analyses: dict[str, AIAnalysisOutput] = {}
+    for key, value_dict in all_data_dicts.items():
         try:
-            # Add symbol and timeframe from key if not in value_dict, or ensure they are present
-            parts = key.split('_')
-            if len(parts) >= 2:  # symbol_timeframe_...
-                value_dict.setdefault('symbol', parts[0])
-                value_dict.setdefault('timeframe', parts[1])
-            valid_analyses[key] = AIAnalysisOutput(**value_dict)
+            response_data = {k: v for k, v in value_dict.items() if k != 'details'}
+            validated_analyses[key] = AIAnalysisOutput(**response_data)
         except Exception as e:
-            print(f"Skipping cache entry {key} due to validation error: {e}")
-
-    return AllAnalysesOutput(analyses=valid_analyses)
-
-# To run: uvicorn app.main:app --reload
+            print(f"Skipping cache entry {key} due to data error: {e}. Data: {value_dict}")
+    return AllAnalysesOutput(analyses=validated_analyses)
