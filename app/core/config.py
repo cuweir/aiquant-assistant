@@ -41,8 +41,8 @@ class Settings:
     WEIGHT_MA_CROSS: int = 2
     WEIGHT_BBANDS_BREAKOUT: int = 1
     WEIGHT_VOLUME_CONFIRMATION: int = 1
-    BUY_SCORE_THRESHOLD: int = 3
-    SELL_SCORE_THRESHOLD: int = -3
+    BUY_SCORE_THRESHOLD: int = 2
+    SELL_SCORE_THRESHOLD: int = -2
 
 settings = Settings()
 

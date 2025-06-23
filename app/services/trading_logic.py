@@ -154,47 +154,69 @@ class TradingLogicService:
             print(f"Error: Current price is missing for {symbol} ({timeframe}). Skipping analysis.")
             return None
 
-        overall_signal_label = "HOLD_OBSERVE"
+        overall_signal_label = "HOLD_OBSERVE"  # Default label
+        ai_suggestion = "AI analysis not triggered due to neutral local score."  # Default AI suggestion
+        should_call_llm = False
         if total_score >= settings.BUY_SCORE_THRESHOLD:
             overall_signal_label = "POTENTIAL_BUY"
+            should_call_llm = True
         elif total_score <= settings.SELL_SCORE_THRESHOLD:
             overall_signal_label = "POTENTIAL_SELL"
+            should_call_llm = True
+        # Optional: if you want to call AI for neutral scores, uncomment below
+        # elif abs(total_score) < settings.BUY_SCORE_THRESHOLD and abs(total_score) > 0:
+        #     overall_signal_label = "WEAK_SIGNAL_NEEDS_AI_REVIEW"
+        #     should_call_llm = True # If you hope ai to provide more context on weak signals
+        else:  # Score is 0 or between sell and buy thresholds
+            overall_signal_label = "HOLD_OBSERVE_NEUTRAL_SCORE"
+             # should_call_llm is already False
 
         print(
-            f"Analysis for {symbol} ({timeframe}): Price={current_price:.4f}, Score={total_score}, Signal: {overall_signal_label}")
+            f"Analysis for {symbol} ({timeframe}): Price={current_price:.2f}, Score={total_score}, Signal: {overall_signal_label}")
         # print(f"Individual Signals: {individual_signals}") # Can be verbose
 
-        ohlcv_indicator_summary = df_with_indicators.iloc[-10:].to_string(float_format="%.4f")
-        prompt = f"""
-        Cryptocurrency Analysis Request for {symbol} ({timeframe}):
+        if should_call_llm:
+            print(f"Local score ({total_score}) met threshold. Querying LLM for {symbol}...")
+            ohlcv_indicator_summary = df_with_indicators.iloc[-5:].to_string(float_format="%.2f")
+            prompt = f"""
+            Cryptocurrency Analysis Request for {symbol} ({timeframe}):
+    
+            Key Data:
+            - Price: {current_price:.2f}
+            - Calculated Signal: {overall_signal_label} (Score: {total_score})
+            - Dominant Indicator Signals (if any, max 3):
+            """
+            significant_signal_count = 0
+            for k, v in individual_signals.items():
+                if "NEUTRAL" not in str(v).upper() and "NO_CROSS" not in str(v).upper() and "INSIDE_BANDS" not in str(
+                        v).upper() and "NORMAL_OR_LOW_VOLUME" not in str(
+                        v).upper() and "_VALUE" not in k.upper() and "_LINE" not in k.upper() and not k.startswith(
+                        'EMA_') and not k.startswith('BB_') and not k.startswith('AVG_VOLUME'):  # exclude neutral signals
+                    if significant_signal_count < 3:  # Limit to 3 significant signals
+                        v_str = f"{v:.2f}" if isinstance(v, float) else str(v)
+                        prompt += f"          - {k}: {v_str}\n"
+                        significant_signal_count += 1
+            if significant_signal_count == 0:
+                prompt += "          - No strong individual indicator signals detected.\n"
 
-        Current Market Data:
-        - Price: {current_price:.4f}
-        - Overall Calculated Signal: {overall_signal_label} (based on a composite score of {total_score})
-        - Individual Indicator States:
-        """
-        for k, v in individual_signals.items():
-            if isinstance(v, float):
-                v_str = f"{v:.4f}"
-            else:
-                v_str = str(v)
-            prompt += f"          - {k}: {v_str}\n"
-        prompt += f"""
-        Recent Market Data with Indicators (last 10 periods):
-        {ohlcv_indicator_summary}
-
-        Task for AI Crypto Analyst:
-        1. Review the overall calculated signal ({overall_signal_label}) and the composite score ({total_score}).
-        2. Examine the individual indicator states. Are there any strong confluences or divergences?
-        3. Based on all the provided data (current price, signals, recent history), provide a concise trading suggestion:
-           [Strong Buy / Buy / Hold & Observe / Sell / Strong Sell / Risky - Avoid]
-        4. Briefly explain your reasoning, highlighting the most influential factors and any potential risks or confirmations to watch for (e.g., volume patterns, upcoming news if inferable - though focus on provided TA).
-        5. If 'Hold & Observe', specify what key changes or confirmations would shift your view.
-
-        Please be concise and actionable.
-        """
-        # CRITICAL: Use the llm_strategy instance
-        ai_suggestion = await self.llm_strategy.generate_analysis(prompt)
+            prompt += f"""
+            Recent Market Data with Indicators (last 5 periods, key indicators):
+            {ohlcv_indicator_summary}
+            
+            AI Analyst Task:
+            1. Briefly assess the `Calculated Signal` ({overall_signal_label}, Score: {total_score}).
+            2. Based on all data, provide a VERY CONCISE trading suggestion:
+               [Strong Buy / Buy / Hold / Sell / Strong Sell / Avoid]
+            3. Give a 1-2 sentence justification for your suggestion, focusing on the most critical factors.
+            4. Mention 1 key risk OR 1 key confirmation to watch.
+    
+            TARGET OUTPUT LENGTH: Under 150 words. Be extremely brief and direct.
+            """
+            # CRITICAL: Use the llm_strategy instance
+            ai_suggestion = await self.llm_strategy.generate_analysis(prompt)
+        else:
+            print(f"Local score ({total_score}) is neutral for {symbol}. Skipping LLM query.")
+            # ai_suggestion remains default: "AI analysis not triggered due to neutral local score."
 
         cache_key = f"{symbol}_{timeframe}_COMPOSITE"
         analysis_data = {
@@ -208,6 +230,7 @@ class TradingLogicService:
             "details": {
                 "composite_score": total_score,
                 "individual_signals": individual_signals,
+                "llm_queried": should_call_llm
             }
         }
         ai_analysis_cache[cache_key] = analysis_data
