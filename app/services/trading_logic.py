@@ -172,8 +172,16 @@ class TradingLogicService:
              # should_call_llm is already False
 
         print(
-            f"Analysis for {symbol} ({timeframe}): Price={current_price:.2f}, Score={total_score}, Signal: {overall_signal_label}")
-        # print(f"Individual Signals: {individual_signals}") # Can be verbose
+            f"Analysis for {symbol} ({timeframe}): Price={current_price:.2f}, Score={total_score}, Calculated Signal: {overall_signal_label}")
+        print("  Detailed Indicator States:")
+        if individual_signals:  # Check if the dictionary is not empty
+            for key, value in individual_signals.items():
+                if isinstance(value, float):
+                    print(f"    {key}: {value:.2f}")  # Format floats nicely
+                else:
+                    print(f"    {key}: {value}")
+        else:
+            print("    No individual signals generated (or error in calculation).")
 
         if should_call_llm:
             print(f"Local score ({total_score}) met threshold. Querying LLM for {symbol}...")
