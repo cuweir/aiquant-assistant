@@ -217,24 +217,24 @@ class TradingLogicService:
         elif total_score <= settings.SELL_SCORE_THRESHOLD:
             overall_signal_label = "POTENTIAL_SELL"
             should_call_llm = True
-            # Use the new helper function for logging
-            price_str = format_price_dynamically(current_price)
-            print(
-                f"Analysis for {symbol} ({timeframe}): Price={price_str}, Total Score={total_score}, Calculated Signal: {overall_signal_label}")
-            print("  Detailed Indicator Signals & Score Contributions:")
-            if individual_signals_details:
-                for signal_detail in individual_signals_details:
-                    indicator = signal_detail.get("indicator", "N/A")
-                    signal = signal_detail.get("signal", "N/A")
-                    value_info = signal_detail.get("value", "N/A")
-                    score_chg = signal_detail.get("score_change", 0)
-                    if isinstance(value_info, float):
-                        value_str = f"{value_info:.2f}"
-                    else:
-                        value_str = str(value_info)
-                    print(f"    - {indicator}: Signal='{signal}', Value(s)='{value_str}', Score Change={score_chg:+}")
-            else:
-                print("    No individual signals details generated.")
+        # Use the new helper function for logging
+        price_str = format_price_dynamically(current_price)
+        print(
+            f"Analysis for {symbol} ({timeframe}): Price={price_str}, Total Score={total_score}, Calculated Signal: {overall_signal_label}")
+        print("  Detailed Indicator Signals & Score Contributions:")
+        if individual_signals_details:
+            for signal_detail in individual_signals_details:
+                indicator = signal_detail.get("indicator", "N/A")
+                signal = signal_detail.get("signal", "N/A")
+                value_info = signal_detail.get("value", "N/A")
+                score_chg = signal_detail.get("score_change", 0)
+                if isinstance(value_info, float):
+                    value_str = f"{value_info:.2f}"
+                else:
+                    value_str = str(value_info)
+                print(f"    - {indicator}: Signal='{signal}', Value(s)='{value_str}', Score Change={score_chg:+}")
+        else:
+            print("    No individual signals details generated.")
 
         if should_call_llm:
             if current_atr is not None and pd.notna(current_atr) and current_atr > 0:
