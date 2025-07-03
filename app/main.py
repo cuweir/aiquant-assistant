@@ -85,6 +85,10 @@ async def trigger_comprehensive_ai_analysis(signal_input: SignalInput):
     if not analysis_result_dict:
         raise HTTPException(status_code=404,
                             detail=f"Comprehensive analysis could not be generated for {signal_input.symbol} on {signal_input.timeframe}")
+    # The Pydantic model AIAnalysisOutput will automatically validate the dict.
+    # If stop_loss or take_profit are missing (e.g., for neutral signals), they will be set to None
+    # as defined in the schema (Optional[float] = None).
+    # This conversion will work as long as the keys match.
     return AIAnalysisOutput(**analysis_result_dict)
 
 
@@ -95,6 +99,8 @@ async def get_all_analyses_endpoint():
     for key, value_dict in all_data_dicts.items():
         try:
             response_data = {k: v for k, v in value_dict.items() if k != 'details'}
+            # Pydantic will handle missing optional fields like stop_loss/take_profit
+            # by setting them to their default (None).
             validated_analyses[key] = AIAnalysisOutput(**response_data)
         except Exception as e:
             print(f"Skipping cache entry {key} due to data error: {e}. Data: {value_dict}")

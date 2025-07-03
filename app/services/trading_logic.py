@@ -8,6 +8,21 @@ from ..llm_providers.base import LLMStrategy
 
 ai_analysis_cache = {}
 
+def format_price_dynamically(price: float) -> str:
+    """
+    Dynamically formats the price based on its value to ensure appropriate precision.
+    """
+    if price is None or not isinstance(price, (int, float)) or pd.isna(price):
+        return "N/A"
+    
+    if price >= 100:
+        return f"{price:.2f}"  # e.g., 65432.10
+    elif price >= 1:
+        return f"{price:.3f}"  # e.g., 5.123
+    elif price >= 0.01:
+        return f"{price:.4f}"  # e.g., 0.5231
+    else:
+        return f"{price:.6f}"  # e.g., 0.001234
 
 class TradingLogicService:
     def __init__(self):
@@ -38,6 +53,8 @@ class TradingLogicService:
             df[f'BBL_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}'] = bbands.iloc[:, 0]
             df[f'BBM_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}'] = bbands.iloc[:, 1]
             df[f'BBU_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}'] = bbands.iloc[:, 2]
+        df[f'ATR_{settings.ATR_PERIOD}'] = df.ta.atr(length=settings.ATR_PERIOD)
+
         if 'volume' not in df.columns:
             df['volume'] = 0
         return df
@@ -139,7 +156,7 @@ class TradingLogicService:
                 score_change = -settings.WEIGHT_BBANDS_BREAKOUT  # Assumed negative for breakdown
             total_score += score_change
             signals_details.append({"indicator": "BollingerBands", "signal": signal_text,
-                                    "value": f"P:{price_close:.2f},U:{latest_bbu:.2f},L:{latest_bbl:.2f}",
+                                    "value": f"P:{format_price_dynamically(price_close)},U:{format_price_dynamically(latest_bbu)},L:{format_price_dynamically(latest_bbl)}",
                                     "score_change": score_change})
 
         # 5. Volume Confirmation (Informational, not directly adding to score in this simplified version)
@@ -166,19 +183,16 @@ class TradingLogicService:
         return signals_details, total_score
 
     async def generate_comprehensive_analysis(self, symbol: str, timeframe: str) -> dict | None:
-        limit_needed = max(settings.MACD_SLOW_PERIOD, settings.MA_LONG_PERIOD, settings.BBANDS_PERIOD,
-                           settings.RSI_PERIOD) + 50  # Ensure enough data for lookbacks
+        limit_needed = max(settings.MACD_SLOW_PERIOD, settings.MA_LONG_PERIOD, settings.BBANDS_PERIOD, settings.RSI_PERIOD, settings.ATR_PERIOD) + 50
         df_ohlcv = await data_fetcher_instance.fetch_ohlcv(symbol, timeframe, limit=limit_needed)
 
         if df_ohlcv is None or df_ohlcv.empty or len(df_ohlcv) < limit_needed - 40:
-            print(
-                f"Not enough OHLCV data for {symbol} ({timeframe}). Required min: {limit_needed - 40}, Got: {len(df_ohlcv) if df_ohlcv is not None else 0}")
+            print(f"Not enough OHLCV data for {symbol} ({timeframe})...")
             return None
 
         df_with_indicators = await self._calculate_indicators(df_ohlcv.copy())
         if df_with_indicators.empty or len(df_with_indicators.iloc[-1].dropna()) < 5:  # Check if latest row has values
-            print(
-                f"Could not calculate sufficient indicators for {symbol} ({timeframe}). Data points in last row: {len(df_with_indicators.iloc[-1].dropna()) if not df_with_indicators.empty else 'Empty DF'}")
+            print(f"Could not calculate sufficient indicators for {symbol} ({timeframe})...")
             return None
 
         # This now returns a list of dicts and the total_score
@@ -186,12 +200,15 @@ class TradingLogicService:
 
         latest_candle = df_with_indicators.iloc[-1]
         current_price = latest_candle.get('close')
+        current_atr = latest_candle.get(f'ATR_{settings.ATR_PERIOD}')
         if current_price is None or pd.isna(current_price):
             print(f"Error: Current price is missing or NaN for {symbol} ({timeframe}). Skipping analysis.")
             return None
 
         overall_signal_label = "HOLD_OBSERVE_NEUTRAL_SCORE"
         ai_suggestion = "AI analysis not triggered due to neutral local score or error."
+        suggested_sl = None
+        suggested_tp = None
         should_call_llm = False
 
         if total_score >= settings.BUY_SCORE_THRESHOLD:
@@ -200,34 +217,39 @@ class TradingLogicService:
         elif total_score <= settings.SELL_SCORE_THRESHOLD:
             overall_signal_label = "POTENTIAL_SELL"
             should_call_llm = True
-
-        # --- MODIFIED LOGGING SECTION ---
-        print(
-            f"Analysis for {symbol} ({timeframe}): Price={current_price:.2f}, Total Score={total_score}, Calculated Signal: {overall_signal_label}")
-        print("  Detailed Indicator Signals & Score Contributions:")
-        if individual_signals_details:
-            for signal_detail in individual_signals_details:
-                indicator = signal_detail.get("indicator", "N/A")
-                signal = signal_detail.get("signal", "N/A")
-                value_info = signal_detail.get("value", "N/A")
-                score_chg = signal_detail.get("score_change", 0)
-
-                # Format value if it's a float, otherwise use as string
-                if isinstance(value_info, float):
-                    value_str = f"{value_info:.2f}"
-                else:
-                    value_str = str(value_info)
-
-                print(
-                    f"    - {indicator}: Signal='{signal}', Value(s)='{value_str}', Score Change={score_chg:+}")  # {:+} shows sign for score
-        else:
-            print("    No individual signals details generated.")
-        # --- END OF MODIFIED LOGGING SECTION ---
+            # Use the new helper function for logging
+            price_str = format_price_dynamically(current_price)
+            print(
+                f"Analysis for {symbol} ({timeframe}): Price={price_str}, Total Score={total_score}, Calculated Signal: {overall_signal_label}")
+            print("  Detailed Indicator Signals & Score Contributions:")
+            if individual_signals_details:
+                for signal_detail in individual_signals_details:
+                    indicator = signal_detail.get("indicator", "N/A")
+                    signal = signal_detail.get("signal", "N/A")
+                    value_info = signal_detail.get("value", "N/A")
+                    score_chg = signal_detail.get("score_change", 0)
+                    if isinstance(value_info, float):
+                        value_str = f"{value_info:.2f}"
+                    else:
+                        value_str = str(value_info)
+                    print(f"    - {indicator}: Signal='{signal}', Value(s)='{value_str}', Score Change={score_chg:+}")
+            else:
+                print("    No individual signals details generated.")
 
         if should_call_llm:
+            if current_atr is not None and pd.notna(current_atr) and current_atr > 0:
+                if overall_signal_label == "POTENTIAL_BUY":
+                    suggested_sl = current_price - (settings.ATR_STOP_LOSS_MULTIPLIER * current_atr)
+                    suggested_tp = current_price + (settings.ATR_TAKE_PROFIT_MULTIPLIER * current_atr)
+                elif overall_signal_label == "POTENTIAL_SELL":
+                    suggested_sl = current_price + (settings.ATR_STOP_LOSS_MULTIPLIER * current_atr)
+                    suggested_tp = current_price - (settings.ATR_TAKE_PROFIT_MULTIPLIER * current_atr)
+                print(f"  ATR-based exit levels calculated: SL={suggested_sl:.2f}, TP={suggested_tp:.2f} (ATR={current_atr:.2f})")
+            else:
+                print("  Warning: Could not calculate ATR-based exit levels (ATR value is missing, NaN, or zero).")
+
             print(f"  Local score ({total_score}) met threshold. Querying LLM for {symbol}...")
-            ohlcv_indicator_summary = df_with_indicators.iloc[-5:].to_string(
-                float_format="%.2f")  # Last 5 periods for LLM context
+            ohlcv_indicator_summary = df_with_indicators.iloc[-5:].to_string(float_format=lambda x: format_price_dynamically(x) if x > 0.00001 else f"{x:.8f}")
 
             prompt_indicator_summary_for_llm = ""
             significant_signal_count = 0
@@ -245,21 +267,28 @@ class TradingLogicService:
             Cryptocurrency Analysis Request for {symbol} ({timeframe}):
 
             Key Data:
-            - Price: {current_price:.2f}
+            - Price: {format_price_dynamically(current_price)}
             - Calculated Signal: {overall_signal_label} (Total Score: {total_score})
+            """
+            if suggested_sl is not None and suggested_tp is not None:
+                prompt += f"""- Suggested Stop Loss (SL): {suggested_sl:.2f} (based on {settings.ATR_STOP_LOSS_MULTIPLIER} * ATR)
+                                - Suggested Take Profit (TP): {suggested_tp:.2f} (based on {settings.ATR_TAKE_PROFIT_MULTIPLIER} * ATR)
+            """
+            prompt += f"""
             - Key Contributing Indicator Signals:
-{prompt_indicator_summary_for_llm}
+            {prompt_indicator_summary_for_llm}
             Recent Market Data with Indicators (last 5 periods):
             {ohlcv_indicator_summary}
 
             AI Analyst Task:
             1. Briefly assess the `Calculated Signal` ({overall_signal_label}, Score: {total_score}) considering the key contributing indicators.
-            2. Based on ALL provided data, provide a VERY CONCISE trading suggestion:
+            2. Validate or adjust the suggested Stop Loss and Take Profit levels. Are they reasonable given the chart context (e.g., recent support/resistance)? Provide your final suggested SL and TP prices.
                [Strong Buy / Buy / Hold / Sell / Strong Sell / Avoid]
-            3. Give a 1-2 sentence justification for your suggestion, focusing on the most critical factors from the data.
-            4. Mention 1 key risk OR 1 key confirmation to watch.
+            3. Based on ALL data, provide a VERY CONCISE trading suggestion:
+            4. Give a 1-2 sentence justification for your suggestion, focusing on the most critical factors.
+            5. Mention 1 key risk OR 1 key confirmation to watch.
 
-            TARGET OUTPUT LENGTH: Under 150 words. Be extremely brief and direct.
+            TARGET OUTPUT LENGTH: Under 180 words. Be extremely brief and direct.
             """
             ai_suggestion = await self.llm_strategy.generate_analysis(prompt)
         else:
@@ -281,6 +310,8 @@ class TradingLogicService:
             "rsi": rsi_val_for_output,  # Use the extracted RSI value
             "price": current_price,
             "ai_analysis": ai_suggestion,
+            "stop_loss": suggested_sl,
+            "take_profit": suggested_tp,
             "details": {  # This is for internal caching, not necessarily for API response unless schema is updated
                 "composite_score": total_score,
                 "individual_signals_details": individual_signals_details,  # Store the new detailed list
