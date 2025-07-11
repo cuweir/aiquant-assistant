@@ -115,18 +115,23 @@ class MultiIndicatorStrategy(TradingStrategy):
         str, float | None, float | None]:
         suggested_sl = None
         suggested_tp = None
-
-        if total_score >= settings.BUY_SCORE_THRESHOLD:
-            overall_signal = "POTENTIAL_BUY"
-            if pd.notna(current_atr) and current_atr > 0:
-                suggested_sl = current_price - (settings.ATR_STOP_LOSS_MULTIPLIER * current_atr)
-                suggested_tp = current_price + (settings.ATR_TAKE_PROFIT_MULTIPLIER * current_atr)
-        elif total_score <= settings.SELL_SCORE_THRESHOLD:
-            overall_signal = "POTENTIAL_SELL"
-            if pd.notna(current_atr) and current_atr > 0:
-                suggested_sl = current_price + (settings.ATR_STOP_LOSS_MULTIPLIER * current_atr)
-                suggested_tp = current_price - (settings.ATR_TAKE_PROFIT_MULTIPLIER * current_atr)
-        else:
+        is_buy_signal = total_score >= settings.BUY_SCORE_THRESHOLD
+        is_sell_signal = total_score <= settings.SELL_SCORE_THRESHOLD
+        
+        
+        if (is_buy_signal or is_sell_signal) and pd.notna(current_atr) and current_atr > 0:
+            stop_loss_distance = settings.ATR_STOP_LOSS_MULTIPLIER * current_atr
+            take_profit_distance = stop_loss_distance * settings.RISK_REWARD_RATIO
+            if is_buy_signal:
+                overall_signal = "POTENTIAL_BUY"
+                suggested_sl = current_price - stop_loss_distance
+                suggested_tp = current_price + take_profit_distance
+            else:  # is_sell_signal
+                overall_signal = "POTENTIAL_SELL"
+                suggested_sl = current_price + stop_loss_distance
+                suggested_tp = current_price - take_profit_distance
+        else:  # No strong signal or ATR is invalid
             overall_signal = "HOLD_OBSERVE_NEUTRAL_SCORE"
+        
 
         return overall_signal, suggested_sl, suggested_tp

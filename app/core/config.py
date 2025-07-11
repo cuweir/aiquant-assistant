@@ -36,8 +36,6 @@ class Settings:
     MA_LONG_PERIOD: int = 30
     BBANDS_PERIOD: int = 20
     BBANDS_STD_DEV: int = 2
-    ATR_STOP_LOSS_MULTIPLIER: float = 2.0
-    ATR_TAKE_PROFIT_MULTIPLIER: float = 4.0
     WEIGHT_RSI_SIGNAL: int = 1
     WEIGHT_MACD_CROSS: int = 2
     WEIGHT_MA_CROSS: int = 2
@@ -46,7 +44,8 @@ class Settings:
     BUY_SCORE_THRESHOLD: int = 2
     SELL_SCORE_THRESHOLD: int = -2
     ATR_PERIOD: int = 14
-
+    ATR_STOP_LOSS_MULTIPLIER: float = 2.0
+    RISK_REWARD_RATIO: float = 2.0  # This means Take Profit will be 2x the Stop Loss distance. (e.g., 1:2 R/R)
 
 settings = Settings()
 

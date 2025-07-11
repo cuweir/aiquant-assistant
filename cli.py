@@ -1,13 +1,20 @@
 import httpx
 import asyncio
 import json
+import os
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 from rich.table import Table
 
-API_BASE_URL = "http://YOUR_AWS_LIGHTSAIL_IP:8000"  # Remember to set your IP
+load_dotenv()
+
+API_BASE_URL = os.getenv("API_SERVER_IP", "http://PLACEHOLDER_IP:8000")
+
+
+API_PREFIX = "/api/v1"
 console = Console()
 
 
@@ -89,7 +96,9 @@ async def display_all_analyses():
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             with console.status("[bold green]Fetching all cached analyses...[/bold green]", spinner="dots"):
-                response = await client.get(f"{API_BASE_URL}/get-all-analyses")
+                url = f"{API_BASE_URL}{API_PREFIX}/get-all-analyses"
+                console.print(f"[dim]Requesting: {url}[/dim]")
+                response = await client.get(url)
             response.raise_for_status()
             data = response.json()
             console.rule("[bold cyan]--- All Cached AI Analyses ---[/bold cyan]", style="cyan")
@@ -120,7 +129,10 @@ async def manual_trigger(symbol: str, timeframe: str):
         try:
             with console.status(f"[bold green]Triggering analysis for {symbol} on {timeframe}...[/bold green]",
                                 spinner="dots"):
-                response = await client.post(f"{API_BASE_URL}/trigger-analysis", json=payload)
+                url = f"{API_BASE_URL}{API_PREFIX}/trigger-analysis"
+                console.print(f"[dim]Requesting: {url}[/dim]")
+                response = await client.post(url, json=payload)
+                
             response.raise_for_status()
             analysis_data = response.json()
             console.rule("[bold cyan]--- Manually Triggered AI Analysis ---[/bold cyan]", style="cyan")

@@ -75,11 +75,68 @@ class AnalysisService:
         print(f"Analysis generation finished for {symbol} ({timeframe}). LLM Queried: {should_call_llm}")
         return final_analysis
 
-    def _build_llm_prompt(self, symbol, timeframe, result, df) -> str:
-        # Logic to build the prompt, extracted for clarity
-        # This is essentially the same prompt building logic as before.
-        # ...
-        return "This is a generated prompt based on strategy results."
+    def _build_llm_prompt(self, symbol: str, timeframe: str, result: Dict[str, Any], df: pd.DataFrame) -> str:
+        """
+        Builds a structured and detailed prompt for the LLM based on the strategy results.
+        """
+        # --- 1. Prepare Key Data Section ---
+        key_data_prompt = f"""
+            Key Data:
+            - Price: {format_price_dynamically(result['current_price'])}
+            - Calculated Signal: {result['overall_signal']} (Total Score: {result['total_score']})
+        """
+        if result['suggested_sl'] is not None and result['suggested_tp'] is not None:
+            key_data_prompt += f"""- Suggested Stop Loss (SL): {format_price_dynamically(result['suggested_sl'])}
+                - Suggested Take Profit (TP): {format_price_dynamically(result['suggested_tp'])} (Implied Risk/Reward Ratio: 1:{settings.RISK_REWARD_RATIO})
+            """
+
+        # --- 2. Prepare Contributing Signals Section ---
+        prompt_indicator_summary = ""
+        significant_signal_count = 0
+        for detail in result.get('signals_details', []):
+            if detail.get('score_change', 0) != 0:  # Only include signals that contributed to the score
+                if significant_signal_count < 4:  # Limit to ~4 key contributing signals for brevity
+                    val_str = f"{detail['value']:.2f}" if isinstance(detail['value'], float) else str(detail['value'])
+                    prompt_indicator_summary += f"          - {detail['indicator']} ({detail['signal']}): {val_str} (Score: {detail['score_change']:+})\n"
+                    significant_signal_count += 1
+        if not prompt_indicator_summary:
+            prompt_indicator_summary = "          - No strong contributing indicator signals detected.\n"
+
+        contributing_signals_prompt = f"""- Key Contributing Indicator Signals:
+            {prompt_indicator_summary}"""
+
+        # --- 3. Prepare Recent Data Section ---
+        # Use dynamic formatting for the DataFrame summary
+        ohlcv_indicator_summary = df.iloc[-5:].to_string(
+            float_format=lambda x: format_price_dynamically(x) if x > 0.00001 else f"{x:.8f}"
+        )
+        recent_data_prompt = f"""
+            Recent Market Data with Indicators (last 5 periods):
+            {ohlcv_indicator_summary}
+        """
+
+        # --- 4. Prepare AI Task Section ---
+        ai_task_prompt = f"""
+            AI Analyst Task:
+            1. Briefly assess the `Calculated Signal` ({result['overall_signal']}, Score: {result['total_score']}) considering the key contributing indicators.
+            2. Validate or adjust the suggested Stop Loss and Take Profit levels. Are they reasonable given the chart context (e.g., recent support/resistance)? Provide your final suggested SL and TP prices.
+            3. Based on ALL provided data, provide a VERY CONCISE trading suggestion:
+               [Strong Buy / Buy / Hold / Sell / Strong Sell / Avoid]
+            4. Give a 1-2 sentence justification for your suggestion, focusing on the most critical factors.
+            5. Mention 1 key risk OR 1 key confirmation to watch.
+            
+            TARGET OUTPUT LENGTH: Under 180 words. Be extremely brief and direct.
+        """
+
+        # --- 5. Assemble the final prompt ---
+        final_prompt = f"""
+            Cryptocurrency Analysis Request for {symbol} ({timeframe}):
+            {key_data_prompt}
+            {contributing_signals_prompt}
+            {recent_data_prompt}
+            {ai_task_prompt}
+        """
+        return final_prompt.strip()
 
     async def get_all_cached_analyses(self) -> dict:
         return analysis_cache
