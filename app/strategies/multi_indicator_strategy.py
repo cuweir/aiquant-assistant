@@ -21,7 +21,7 @@ class MultiIndicatorStrategy(TradingStrategy):
 
         if df_with_indicators.empty or len(df_with_indicators.iloc[-1].dropna()) < 5:
             print(f"Could not calculate sufficient indicators.")
-            return {}  # Return empty dict on failure
+            return {}
 
         signals_details, total_score = self._get_indicator_signals_and_score(df_with_indicators)
 
@@ -46,7 +46,11 @@ class MultiIndicatorStrategy(TradingStrategy):
         }
 
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculates all necessary indicators and appends them to the DataFrame."""
         if df is None or df.empty: return pd.DataFrame()
+
+        # pandas_ta's append=True argument adds the column directly to the dataframe.
+        # This simplifies the indicator calculation block.
         df.ta.rsi(length=settings.RSI_PERIOD, append=True)
         df.ta.macd(fast=settings.MACD_FAST_PERIOD, slow=settings.MACD_SLOW_PERIOD, signal=settings.MACD_SIGNAL_PERIOD,
                    append=True)
@@ -54,74 +58,156 @@ class MultiIndicatorStrategy(TradingStrategy):
         df.ta.ema(length=settings.MA_LONG_PERIOD, append=True)
         df.ta.bbands(length=settings.BBANDS_PERIOD, std=settings.BBANDS_STD_DEV, append=True)
         df.ta.atr(length=settings.ATR_PERIOD, append=True)
-        if 'volume' not in df.columns: df['volume'] = 0
+
+        if 'volume' not in df.columns:
+            df['volume'] = 0
+
         return df
 
     def _get_indicator_signals_and_score(self, df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Analyzes the latest row of the DataFrame to generate signals and a composite score.
+        This is the FULL and COMPLETE implementation.
+        """
         signals_details: List[Dict[str, Any]] = []
         total_score = 0
-        if len(df) < 2: return signals_details, total_score
+        if len(df) < 2:
+            signals_details.append(
+                {"indicator": "DataCheck", "signal": "NotEnoughData", "value": len(df), "score_change": 0})
+            return signals_details, total_score
 
         latest = df.iloc[-1]
         previous = df.iloc[-2]
 
-        # RSI
-        rsi_value = latest.get(f'RSI_{settings.RSI_PERIOD}')
+        # 1. RSI Signal
+        rsi_key = f'RSI_{settings.RSI_PERIOD}'
+        rsi_value = latest.get(rsi_key)
         if pd.notna(rsi_value):
-            score_change = 0;
+            score_change = 0
             signal_text = "NEUTRAL"
             if rsi_value < settings.RSI_OVERSOLD:
-                signal_text = "OVERSOLD_BUY";
+                signal_text = "OVERSOLD_BUY"
                 score_change = settings.WEIGHT_RSI_SIGNAL
             elif rsi_value > settings.RSI_OVERBOUGHT:
-                signal_text = "OVERBOUGHT_SELL";
+                signal_text = "OVERBOUGHT_SELL"
                 score_change = -settings.WEIGHT_RSI_SIGNAL
             total_score += score_change
             signals_details.append(
                 {"indicator": "RSI", "signal": signal_text, "value": rsi_value, "score_change": score_change})
+        else:
+            signals_details.append(
+                {"indicator": "RSI", "signal": "DATA_INSUFFICIENT", "value": "NaN", "score_change": 0})
 
-        # MACD, MA Cross, BollingerBands, Volume logic (identical to your previous version)
-        # ... (This logic is complex but self-contained, no need to show again for brevity,
-        # but it would be pasted here in the actual file) ...
-        # For full implementation, the logic from the previous `_get_indicator_signals_and_score` goes here.
-        # This part is just a placeholder to show structure.
-        # Let's add a simplified version for demonstration.
-        macd_line = latest.get(
-            f'MACD_{settings.MACD_FAST_PERIOD}_{settings.MACD_SLOW_PERIOD}_{settings.MACD_SIGNAL_PERIOD}')
-        signal_line = latest.get(
-            f'MACDs_{settings.MACD_FAST_PERIOD}_{settings.MACD_SLOW_PERIOD}_{settings.MACD_SIGNAL_PERIOD}')
-        prev_macd_line = previous.get(
-            f'MACD_{settings.MACD_FAST_PERIOD}_{settings.MACD_SLOW_PERIOD}_{settings.MACD_SIGNAL_PERIOD}')
-        prev_signal_line = previous.get(
-            f'MACDs_{settings.MACD_FAST_PERIOD}_{settings.MACD_SLOW_PERIOD}_{settings.MACD_SIGNAL_PERIOD}')
-
-        if all(pd.notna(v) for v in [macd_line, signal_line, prev_macd_line, prev_signal_line]):
-            score_change = 0;
+        # 2. MACD Signal (Crossover)
+        macd_line_key = f'MACD_{settings.MACD_FAST_PERIOD}_{settings.MACD_SLOW_PERIOD}_{settings.MACD_SIGNAL_PERIOD}'
+        signal_line_key = f'MACDs_{settings.MACD_FAST_PERIOD}_{settings.MACD_SLOW_PERIOD}_{settings.MACD_SIGNAL_PERIOD}'
+        latest_macd = latest.get(macd_line_key)
+        latest_signal = latest.get(signal_line_key)
+        prev_macd = previous.get(macd_line_key)
+        prev_signal = previous.get(signal_line_key)
+        if all(pd.notna(val) for val in [latest_macd, latest_signal, prev_macd, prev_signal]):
+            score_change = 0
             signal_text = "NO_CROSS"
-            if prev_macd_line < prev_signal_line and macd_line > signal_line:
-                signal_text = "GOLDEN_CROSS_BUY";
+            if prev_macd < prev_signal and latest_macd > latest_signal:
+                signal_text = "GOLDEN_CROSS_BUY"
                 score_change = settings.WEIGHT_MACD_CROSS
-            elif prev_macd_line > prev_signal_line and macd_line < signal_line:
-                signal_text = "DEATH_CROSS_SELL";
+            elif prev_macd > prev_signal and latest_macd < latest_signal:
+                signal_text = "DEATH_CROSS_SELL"
                 score_change = -settings.WEIGHT_MACD_CROSS
             total_score += score_change
             signals_details.append({"indicator": "MACD_Cross", "signal": signal_text,
-                                    "value": f"MACD:{macd_line:.2f},Sig:{signal_line:.2f}",
+                                    "value": f"MACD:{latest_macd:.2f},Sig:{latest_signal:.2f}",
                                     "score_change": score_change})
+        else:
+            signals_details.append(
+                {"indicator": "MACD_Cross", "signal": "DATA_INSUFFICIENT", "value": "NaN", "score_change": 0})
+
+        # 3. MA Crossover Signal (EMA example)
+        short_ma_key = f'EMA_{settings.MA_SHORT_PERIOD}'
+        long_ma_key = f'EMA_{settings.MA_LONG_PERIOD}'
+        latest_short_ma = latest.get(short_ma_key)
+        latest_long_ma = latest.get(long_ma_key)
+        prev_short_ma = previous.get(short_ma_key)
+        prev_long_ma = previous.get(long_ma_key)
+        if all(pd.notna(val) for val in [latest_short_ma, latest_long_ma, prev_short_ma, prev_long_ma]):
+            score_change = 0
+            signal_text = "NO_CROSS"
+            if prev_short_ma < prev_long_ma and latest_short_ma > latest_long_ma:
+                signal_text = "GOLDEN_CROSS_BUY"
+                score_change = settings.WEIGHT_MA_CROSS
+            elif prev_short_ma > prev_long_ma and latest_short_ma < latest_long_ma:
+                signal_text = "DEATH_CROSS_SELL"
+                score_change = -settings.WEIGHT_MA_CROSS
+            total_score += score_change
+            signals_details.append({"indicator": "MA_Cross", "signal": signal_text,
+                                    "value": f"S:{latest_short_ma:.2f},L:{latest_long_ma:.2f}",
+                                    "score_change": score_change})
+        else:
+            signals_details.append(
+                {"indicator": "MA_Cross", "signal": "DATA_INSUFFICIENT", "value": "NaN", "score_change": 0})
+
+        # 4. Bollinger Bands Signal
+        price_close = latest.get('close')
+        bbu_key = f'BBU_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}'
+        bbl_key = f'BBL_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}'
+        latest_bbu = latest.get(bbu_key)
+        latest_bbl = latest.get(bbl_key)
+        if price_close is not None and pd.notna(price_close) and all(pd.notna(val) for val in [latest_bbu, latest_bbl]):
+            score_change = 0
+            signal_text = "INSIDE_BANDS"
+            if price_close > latest_bbu:
+                signal_text = "BREAK_UPPER"
+                score_change = settings.WEIGHT_BBANDS_BREAKOUT
+            elif price_close < latest_bbl:
+                signal_text = "BREAK_LOWER"
+                score_change = -settings.WEIGHT_BBANDS_BREAKOUT
+            total_score += score_change
+            signals_details.append({"indicator": "BollingerBands", "signal": signal_text,
+                                    "value": f"P:{format_price_dynamically(price_close)},U:{format_price_dynamically(latest_bbu)},L:{format_price_dynamically(latest_bbl)}",
+                                    "score_change": score_change})
+        else:
+            signals_details.append(
+                {"indicator": "BollingerBands", "signal": "DATA_INSUFFICIENT", "value": "NaN", "score_change": 0})
+
+        # 5. Volume Confirmation (Informational, not directly adding to score in this simplified version)
+        volume_latest = latest.get('volume')
+        if volume_latest is not None and pd.notna(volume_latest):
+            avg_volume_period = 5
+            signal_text = "VOLUME_DATA_UNAVAILABLE"
+            vol_value_str = f"Vol:{volume_latest:.2f}"
+            if len(df) > avg_volume_period + 1:
+                avg_volume = df['volume'].iloc[-(avg_volume_period + 1):-1].mean()
+                if pd.notna(avg_volume) and avg_volume > 0:
+                    vol_value_str = f"Vol:{volume_latest:.2f},Avg5P:{avg_volume:.2f}"
+                    if volume_latest > avg_volume * 1.5:
+                        signal_text = "HIGH_VOLUME"
+                    else:
+                        signal_text = "NORMAL_OR_LOW_VOLUME"
+                else:
+                    signal_text = "VOLUME_AVG_NOT_CALCULABLE"
+            else:
+                signal_text = "NOT_ENOUGH_DATA_FOR_VOLUME_AVG"
+            signals_details.append(
+                {"indicator": "Volume", "signal": signal_text, "value": vol_value_str, "score_change": 0})
+        else:
+            signals_details.append(
+                {"indicator": "Volume", "signal": "DATA_INSUFFICIENT", "value": "NaN", "score_change": 0})
 
         return signals_details, total_score
 
     def _determine_overall_signal_and_exits(self, total_score: int, current_price: float, current_atr: float) -> Tuple[
         str, float | None, float | None]:
+        """Determines the final signal and exit prices based on score and ATR."""
         suggested_sl = None
         suggested_tp = None
+
         is_buy_signal = total_score >= settings.BUY_SCORE_THRESHOLD
         is_sell_signal = total_score <= settings.SELL_SCORE_THRESHOLD
-        
-        
+
         if (is_buy_signal or is_sell_signal) and pd.notna(current_atr) and current_atr > 0:
             stop_loss_distance = settings.ATR_STOP_LOSS_MULTIPLIER * current_atr
             take_profit_distance = stop_loss_distance * settings.RISK_REWARD_RATIO
+
             if is_buy_signal:
                 overall_signal = "POTENTIAL_BUY"
                 suggested_sl = current_price - stop_loss_distance
@@ -132,6 +218,5 @@ class MultiIndicatorStrategy(TradingStrategy):
                 suggested_tp = current_price - take_profit_distance
         else:  # No strong signal or ATR is invalid
             overall_signal = "HOLD_OBSERVE_NEUTRAL_SCORE"
-        
 
         return overall_signal, suggested_sl, suggested_tp
