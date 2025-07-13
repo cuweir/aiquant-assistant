@@ -5,15 +5,17 @@ load_dotenv()
 
 class Settings:
     PROJECT_NAME: str = "AI Quant Assistant"
-    PROJECT_VERSION: str = "0.3.1" # Version up for strategy pattern
+    PROJECT_VERSION: str = "0.4.0" # Version up for DB persistence
 
+    # --- Database ---
+    DATABASE_URL: str = os.getenv("DATABASE_URL")
+
+    # --- Binance ---
     BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY_READONLY")
     BINANCE_API_SECRET: str = os.getenv("BINANCE_API_SECRET_READONLY")
 
     # --- LLM Provider Configuration ---
-    # Set this in your .env file. For now, it will effectively always be "gemini".
     ACTIVE_LLM_PROVIDER: str = os.getenv("ACTIVE_LLM_PROVIDER", "gemini").lower()
-
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY")
     GEMINI_MODEL_NAME: str = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash-latest")
 
@@ -21,11 +23,12 @@ class Settings:
     # OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
     # OPENAI_MODEL_NAME: str = os.getenv("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
 
-    # --- Strategy Parameters (from your previous version) ---
+    # --- Strategy & Exit Parameters ---
     DEFAULT_TIMEFRAME: str = "1h"
     SYMBOLS_TO_MONITOR: list[str] = [
         "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
     ]
+    # ... (RSI, MACD, MA, BBANDS parameters as before) ...
     RSI_PERIOD: int = 14
     RSI_OVERBOUGHT: int = 70
     RSI_OVERSOLD: int = 30
@@ -36,16 +39,18 @@ class Settings:
     MA_LONG_PERIOD: int = 30
     BBANDS_PERIOD: int = 20
     BBANDS_STD_DEV: int = 2
+    WEIGHT_VOLUME_CONFIRMATION: int = 1
+    ATR_PERIOD: int = 14
+    ATR_STOP_LOSS_MULTIPLIER: float = 2.0
+    RISK_REWARD_RATIO: float = 2.0
+
+    # --- Scoring ---
     WEIGHT_RSI_SIGNAL: int = 1
     WEIGHT_MACD_CROSS: int = 2
     WEIGHT_MA_CROSS: int = 2
     WEIGHT_BBANDS_BREAKOUT: int = 1
-    WEIGHT_VOLUME_CONFIRMATION: int = 1
     BUY_SCORE_THRESHOLD: int = 2
     SELL_SCORE_THRESHOLD: int = -2
-    ATR_PERIOD: int = 14
-    ATR_STOP_LOSS_MULTIPLIER: float = 2.0
-    RISK_REWARD_RATIO: float = 2.0  # This means Take Profit will be 2x the Stop Loss distance. (e.g., 1:2 R/R)
 
 settings = Settings()
 
@@ -57,6 +62,9 @@ if settings.ACTIVE_LLM_PROVIDER == "gemini" and not settings.GEMINI_API_KEY:
 
 if not all([settings.BINANCE_API_KEY, settings.BINANCE_API_SECRET]):
     raise ValueError("Binance API keys are missing. Please set them in your .env file.")
+
+if not settings.DATABASE_URL:
+    raise ValueError("DATABASE_URL is not set in the .env file.")
 
 print(f"AI Quant Assistant configured with LLM Provider: {settings.ACTIVE_LLM_PROVIDER.upper()}")
 print(f"Using LLM Model: {settings.GEMINI_MODEL_NAME if settings.ACTIVE_LLM_PROVIDER == 'gemini' else 'N/A'}")

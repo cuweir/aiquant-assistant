@@ -1,149 +1,200 @@
 import pandas as pd
-from typing import Dict, Any
+from typing import Dict, Any, List
+from sqlalchemy.orm import Session
 
 from .data_fetcher import data_fetcher_instance
 from ..core.config import settings
 from ..llm_providers import get_llm_strategy
 from ..strategies.multi_indicator_strategy import MultiIndicatorStrategy
+from ..db.session import SessionLocal
+from ..db.models import AnalysisResult, Symbol, Strategy
 from ..utils.formatters import format_price_dynamically
-
-# This will be replaced by a database layer later.
-analysis_cache: Dict[str, Any] = {}
 
 
 class AnalysisService:
     def __init__(self):
         self.data_fetcher = data_fetcher_instance
         self.llm_strategy = get_llm_strategy(settings)
-        # In a more complex system, you might choose the strategy based on config
         self.trading_strategy = MultiIndicatorStrategy()
 
-    async def generate_comprehensive_analysis(self, symbol: str, timeframe: str) -> dict | None:
-        # 1. Fetch data
-        limit_needed = 200  # A safe buffer for indicators
-        df_ohlcv = await self.data_fetcher.fetch_ohlcv(symbol, timeframe, limit=limit_needed)
+    def _get_or_create_symbol(self, db: Session, symbol_name: str) -> Symbol:
+        """Finds an existing symbol or creates a new one in the database."""
+        symbol = db.query(Symbol).filter(Symbol.name == symbol_name).first()
+        if not symbol:
+            print(f"Symbol '{symbol_name}' not found in DB, creating new entry.")
+            symbol = Symbol(name=symbol_name)
+            db.add(symbol)
+            db.commit()
+            db.refresh(symbol)
+        return symbol
+
+    def _get_or_create_strategy(self, db: Session, strategy_name: str, config: dict) -> Strategy:
+        """Finds an existing strategy or creates a new one in the database."""
+        strategy = db.query(Strategy).filter(Strategy.strategy_name == strategy_name).first()
+        if not strategy:
+            print(f"Strategy '{strategy_name}' not found in DB, creating new entry.")
+            strategy = Strategy(
+                strategy_name=strategy_name,
+                description="Multi-Indicator Scoring Strategy with ATR-based exits",
+                config=config
+            )
+            db.add(strategy)
+            db.commit()
+            db.refresh(strategy)
+        return strategy
+
+    async def generate_comprehensive_analysis(self, symbol_name: str, timeframe: str) -> Dict[str, Any] | None:
+        """
+        The main orchestration method. Fetches data, runs strategy, calls LLM, and saves to DB.
+        """
+        # 1. Fetch market data
+        limit_needed = 200  # A safe buffer for all indicators
+        df_ohlcv = await self.data_fetcher.fetch_ohlcv(symbol_name, timeframe, limit=limit_needed)
         if df_ohlcv is None or df_ohlcv.empty:
-            print(f"No OHLCV data for {symbol} ({timeframe}).")
+            print(f"No OHLCV data for {symbol_name} ({timeframe}).")
             return None
 
-        # 2. Generate signals from strategy
+        # 2. Generate signals from the trading strategy
         strategy_result = await self.trading_strategy.generate_signals(df_ohlcv)
         if not strategy_result:
-            print(f"Strategy failed to generate signals for {symbol} ({timeframe}).")
+            print(f"Strategy failed to generate signals for {symbol_name} ({timeframe}).")
             return None
 
-        # 3. Log the technical analysis result
         price_str = format_price_dynamically(strategy_result['current_price'])
         print(
-            f"Analysis for {symbol} ({timeframe}): Price={price_str}, Score={strategy_result['total_score']}, Signal: {strategy_result['overall_signal']}")
-        for detail in strategy_result['signals_details']:
-            score_chg = detail.get('score_change', 0)
-            if score_chg != 0:  # Only log signals that contributed to the score
-                print(f"    - {detail['indicator']} ({detail['signal']}): Score Change={score_chg:+}")
+            f"Analysis for {symbol_name} ({timeframe}): Price={price_str}, Score={strategy_result['total_score']}, Signal: {strategy_result['overall_signal']}")
 
-        # 4. Decide whether to call LLM
+        # 3. Decide whether to call LLM and get AI suggestion
         ai_suggestion = "AI analysis not triggered due to neutral local score."
         should_call_llm = strategy_result['overall_signal'] in ["POTENTIAL_BUY", "POTENTIAL_SELL"]
 
         if should_call_llm:
-            print(f"  Local score met threshold. Querying LLM...")
-            prompt = self._build_llm_prompt(symbol, timeframe, strategy_result, df_ohlcv)
+            print(f"  Local score met threshold. Querying LLM for {symbol_name}...")
+            prompt = self._build_llm_prompt(symbol_name, timeframe, strategy_result, df_ohlcv)
             ai_suggestion = await self.llm_strategy.generate_analysis(prompt)
-        else:
-            print(f"  Local score is neutral. Skipping LLM query.")
 
-        # 5. Assemble final analysis data and cache it
-        final_analysis = {
-            "timestamp": pd.Timestamp.now(tz='UTC'),
-            "symbol": symbol, "timeframe": timeframe,
-            "local_signal": strategy_result['overall_signal'],
-            "price": strategy_result['current_price'],
-            "stop_loss": strategy_result['suggested_sl'],
-            "take_profit": strategy_result['suggested_tp'],
-            "ai_analysis": ai_suggestion,
-            "rsi": next((d['value'] for d in strategy_result['signals_details'] if d['indicator'] == 'RSI'),
-                        float('nan')),
-            "details": {
-                "composite_score": strategy_result['total_score'],
-                "individual_signals_details": strategy_result['signals_details'],
-                "llm_queried": should_call_llm
+        # 4. Save the result to the database
+        db: Session = SessionLocal()
+        try:
+            # Get or create related records for foreign keys
+            strategy_config = {"atr_sl_multiplier": settings.ATR_STOP_LOSS_MULTIPLIER,
+                               "rr_ratio": settings.RISK_REWARD_RATIO}
+            symbol_record = self._get_or_create_symbol(db, symbol_name)
+            strategy_record = self._get_or_create_strategy(db, "multi_indicator_v1.1", strategy_config)
+
+            # Create an AnalysisResult ORM object
+            db_analysis_result = AnalysisResult(
+                timestamp=pd.Timestamp.now(tz='UTC').to_pydatetime(),  # Convert to python datetime
+                symbol_id=symbol_record.id,
+                strategy_id=strategy_record.id,
+                timeframe=timeframe,
+                current_price=strategy_result['current_price'],
+                composite_score=strategy_result['total_score'],
+                overall_signal=strategy_result['overall_signal'],
+                suggested_sl=strategy_result['suggested_sl'],
+                suggested_tp=strategy_result['suggested_tp'],
+                llm_queried=should_call_llm,
+                llm_analysis=ai_suggestion,
+                indicator_details=strategy_result['signals_details']  # Save the detailed list as JSONB
+            )
+
+            db.add(db_analysis_result)
+            db.commit()
+            db.refresh(db_analysis_result)
+            print(f"Analysis for {symbol_name} successfully saved to database with ID: {db_analysis_result.id}")
+
+            # 5. Prepare a dictionary to return to the API layer (for immediate response)
+            # This dict must match the AIAnalysisOutput Pydantic schema
+            return {
+                "timestamp": db_analysis_result.timestamp,
+                "symbol": symbol_name,
+                "timeframe": timeframe,
+                "local_signal": db_analysis_result.overall_signal,
+                "price": float(db_analysis_result.current_price),  # Convert Numeric to float
+                "stop_loss": float(db_analysis_result.suggested_sl) if db_analysis_result.suggested_sl else None,
+                "take_profit": float(db_analysis_result.suggested_tp) if db_analysis_result.suggested_tp else None,
+                "ai_analysis": db_analysis_result.llm_analysis,
+                "rsi": next((d['value'] for d in strategy_result['signals_details'] if d['indicator'] == 'RSI'),
+                            float('nan')),
             }
-        }
-
-        cache_key = f"{symbol}_{timeframe}_COMPOSITE"
-        analysis_cache[cache_key] = final_analysis
-        print(f"Analysis generation finished for {symbol} ({timeframe}). LLM Queried: {should_call_llm}")
-        return final_analysis
+        except Exception as e:
+            print(f"Database Error: Failed to save analysis for {symbol_name}. Error: {e}")
+            import traceback
+            traceback.print_exc()
+            db.rollback()  # Rollback the transaction on error
+            return None
+        finally:
+            db.close()  # Always close the session
 
     def _build_llm_prompt(self, symbol: str, timeframe: str, result: Dict[str, Any], df: pd.DataFrame) -> str:
         """
-        Builds a structured and detailed prompt for the LLM based on the strategy results.
+        Builds a detailed and high-quality prompt for the LLM based on the strategy results.
+        This method is now fully implemented.
         """
-        # --- 1. Prepare Key Data Section ---
-        key_data_prompt = f"""
-            Key Data:
-            - Price: {format_price_dynamically(result['current_price'])}
-            - Calculated Signal: {result['overall_signal']} (Total Score: {result['total_score']})
+        price_str = format_price_dynamically(result['current_price'])
+
+        # Build a summary of key contributing signals
+        prompt_indicator_summary_for_llm = ""
+        significant_signal_count = 0
+        if result.get('signals_details'):
+            for detail in result['signals_details']:
+                if detail.get("score_change", 0) != 0:  # Only include signals that contributed to the score
+                    if significant_signal_count < 4:  # Limit to ~4 key contributing signals for brevity
+                        val_str = f"{detail['value']:.2f}" if isinstance(detail['value'], float) else str(
+                            detail['value'])
+                        prompt_indicator_summary_for_llm += f"          - {detail['indicator']} ({detail['signal']}): {val_str} (Score: {detail['score_change']:+})\n"
+                        significant_signal_count += 1
+
+        if not prompt_indicator_summary_for_llm:
+            prompt_indicator_summary_for_llm = "          - No strong individual indicator signals detected.\n"
+
+        # Build the main prompt string
+        prompt = f"""
+            Cryptocurrency Analysis Request for {symbol} ({timeframe}):
+    
+            **1. Core Signal Data:**
+               - **Price:** {price_str}
+               - **Calculated Signal:** {result['overall_signal']} (Total Score: {result['total_score']})
         """
+
         if result['suggested_sl'] is not None and result['suggested_tp'] is not None:
-            key_data_prompt += f"""- Suggested Stop Loss (SL): {format_price_dynamically(result['suggested_sl'])}
-                - Suggested Take Profit (TP): {format_price_dynamically(result['suggested_tp'])} (Implied Risk/Reward Ratio: 1:{settings.RISK_REWARD_RATIO})
+            prompt += f"""           - **Suggested Stop Loss (SL):** {format_price_dynamically(result['suggested_sl'])}
+                - **Suggested Take Profit (TP):** {format_price_dynamically(result['suggested_tp'])} (Implied Risk/Reward Ratio: 1:{settings.RISK_REWARD_RATIO})
             """
 
-        # --- 2. Prepare Contributing Signals Section ---
-        prompt_indicator_summary = ""
-        significant_signal_count = 0
-        for detail in result.get('signals_details', []):
-            if detail.get('score_change', 0) != 0:  # Only include signals that contributed to the score
-                if significant_signal_count < 4:  # Limit to ~4 key contributing signals for brevity
-                    val_str = f"{detail['value']:.2f}" if isinstance(detail['value'], float) else str(detail['value'])
-                    prompt_indicator_summary += f"          - {detail['indicator']} ({detail['signal']}): {val_str} (Score: {detail['score_change']:+})\n"
-                    significant_signal_count += 1
-        if not prompt_indicator_summary:
-            prompt_indicator_summary = "          - No strong contributing indicator signals detected.\n"
-
-        contributing_signals_prompt = f"""- Key Contributing Indicator Signals:
-            {prompt_indicator_summary}"""
-
-        # --- 3. Prepare Recent Data Section ---
-        # Use dynamic formatting for the DataFrame summary
-        ohlcv_indicator_summary = df.iloc[-5:].to_string(
-            float_format=lambda x: format_price_dynamically(x) if x > 0.00001 else f"{x:.8f}"
-        )
-        recent_data_prompt = f"""
-            Recent Market Data with Indicators (last 5 periods):
-            {ohlcv_indicator_summary}
+        prompt += f"""
+            **2. Key Contributing Indicator Signals:**
+            {prompt_indicator_summary_for_llm}
+            **3. Recent Market Data with Indicators (last 5 periods):**
+               ```
+               {df.iloc[-5:].to_string(float_format=lambda x: format_price_dynamically(x))}
+               ```
+    
+            **AI Analyst Task:**
+    
+            You are a professional, data-driven crypto analyst. Your advice must be concise, actionable, and based *only* on the data provided.
+    
+            1.  **Assess the Signal:** Briefly evaluate the `Calculated Signal`. Is the score strong? Do the contributing indicators show clear alignment (confluence) or are there mixed signals (divergence)?
+            2.  **Validate Exit Levels:** Review the `Suggested Stop Loss (SL)` and `Take Profit (TP)`. Are they placed at logical levels, or should they be adjusted based on the recent price action shown in the market data? Provide your **final suggested SL and TP prices**.
+            3.  **Provide Final Suggestion:** Based on everything, give a single, clear trading suggestion from this list:
+                **[Strong Buy / Buy / Hold / Sell / Strong Sell / Avoid]**
+            4.  **Justify:** In 1-2 sentences, explain *why* you made that suggestion.
+            5.  **Identify Key Factor:** Mention the single most important risk to watch for OR a key confirmation that would strengthen the signal.
+    
+            **Format your response clearly using Markdown.**
         """
+        return prompt.strip()
 
-        # --- 4. Prepare AI Task Section ---
-        ai_task_prompt = f"""
-            AI Analyst Task:
-            1. Briefly assess the `Calculated Signal` ({result['overall_signal']}, Score: {result['total_score']}) considering the key contributing indicators.
-            2. Validate or adjust the suggested Stop Loss and Take Profit levels. Are they reasonable given the chart context (e.g., recent support/resistance)? Provide your final suggested SL and TP prices.
-            3. Based on ALL provided data, provide a VERY CONCISE trading suggestion:
-               [Strong Buy / Buy / Hold / Sell / Strong Sell / Avoid]
-            4. Give a 1-2 sentence justification for your suggestion, focusing on the most critical factors.
-            5. Mention 1 key risk OR 1 key confirmation to watch.
-            
-            TARGET OUTPUT LENGTH: Under 180 words. Be extremely brief and direct.
-        """
-
-        # --- 5. Assemble the final prompt ---
-        final_prompt = f"""
-            Cryptocurrency Analysis Request for {symbol} ({timeframe}):
-            {key_data_prompt}
-            {contributing_signals_prompt}
-            {recent_data_prompt}
-            {ai_task_prompt}
-        """
-        return final_prompt.strip()
-
-    async def get_all_cached_analyses(self) -> dict:
-        return analysis_cache
+    def get_all_analyses_from_db(self, db: Session, skip: int = 0, limit: int = 20) -> List[AnalysisResult]:
+        """Fetches a paginated list of analysis results from the database."""
+        # Eagerly load related symbol and strategy to avoid multiple queries
+        return db.query(AnalysisResult).options(
+            pd.orm.joinedload(AnalysisResult.symbol),
+            pd.orm.joinedload(AnalysisResult.strategy)
+        ).order_by(AnalysisResult.timestamp.desc()).offset(skip).limit(limit).all()
 
     async def close_llm_resources(self):
         await self.llm_strategy.close_clients()
 
 
-# Global instance for dependency injection
 analysis_service = AnalysisService()
