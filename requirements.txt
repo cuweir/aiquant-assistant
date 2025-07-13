@@ -13,3 +13,4 @@ protobuf~=5.29.5
 rich~=14.0.0
 SQLAlchemy~=2.0.41
 alembic~=1.16.4
+psycopg2

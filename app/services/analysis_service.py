@@ -1,7 +1,7 @@
 import pandas as pd
 from typing import Dict, Any, List
 from sqlalchemy.orm import Session
-
+import json
 from .data_fetcher import data_fetcher_instance
 from ..core.config import settings
 from ..llm_providers import get_llm_strategy
@@ -82,17 +82,23 @@ class AnalysisService:
             symbol_record = self._get_or_create_symbol(db, symbol_name)
             strategy_record = self._get_or_create_strategy(db, "multi_indicator_v1.1", strategy_config)
 
-            # Create an AnalysisResult ORM object
+            current_price_float = float(strategy_result['current_price']) if pd.notna(
+                strategy_result['current_price']) else None
+            suggested_sl_float = float(strategy_result['suggested_sl']) if pd.notna(
+                strategy_result['suggested_sl']) else None
+            suggested_tp_float = float(strategy_result['suggested_tp']) if pd.notna(
+                strategy_result['suggested_tp']) else None
+
             db_analysis_result = AnalysisResult(
                 timestamp=pd.Timestamp.now(tz='UTC').to_pydatetime(),  # Convert to python datetime
                 symbol_id=symbol_record.id,
                 strategy_id=strategy_record.id,
                 timeframe=timeframe,
-                current_price=strategy_result['current_price'],
-                composite_score=strategy_result['total_score'],
+                current_price=current_price_float,
+                composite_score=int(strategy_result['total_score']),
                 overall_signal=strategy_result['overall_signal'],
-                suggested_sl=strategy_result['suggested_sl'],
-                suggested_tp=strategy_result['suggested_tp'],
+                suggested_sl=suggested_sl_float,
+                suggested_tp=suggested_tp_float,
                 llm_queried=should_call_llm,
                 llm_analysis=ai_suggestion,
                 indicator_details=strategy_result['signals_details']  # Save the detailed list as JSONB
