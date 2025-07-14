@@ -46,11 +46,11 @@ class Settings:
 
     # --- Scoring ---
     WEIGHT_RSI_SIGNAL: int = 1
-    WEIGHT_MACD_CROSS: int = 2
+    WEIGHT_MACD_CROSS: int = 1
     WEIGHT_MA_CROSS: int = 2
     WEIGHT_BBANDS_BREAKOUT: int = 1
-    BUY_SCORE_THRESHOLD: int = 2
-    SELL_SCORE_THRESHOLD: int = -2
+    BUY_SCORE_THRESHOLD: int = 3
+    SELL_SCORE_THRESHOLD: int = -3
 
 settings = Settings()
 

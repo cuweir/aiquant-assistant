@@ -15,27 +15,36 @@ class MultiIndicatorStrategy(TradingStrategy):
 
     async def generate_signals(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
-        Implements the signal generation logic based on multiple indicators.
+        Public method to generate signals. It orchestrates the internal calculation
+        and scoring logic.
         """
+        # 1. Calculate all indicators on the DataFrame
         df_with_indicators = self._calculate_indicators(df.copy())
 
-        if df_with_indicators.empty or len(df_with_indicators.iloc[-1].dropna()) < 5:
-            print(f"Could not calculate sufficient indicators.")
+        # 2. Drop all rows that have ANY NaN value after indicator calculation.
+        df_clean = df_with_indicators.dropna()
+
+        if len(df_clean) < 2:
+            print(
+                f"Warning: After dropping NaN rows, not enough data remains for signal generation. Original rows: {len(df)}, Clean rows: {len(df_clean)}")
             return {}
 
-        signals_details, total_score = self._get_indicator_signals_and_score(df_with_indicators)
+        # 3. Generate signals and score using the cleaned DataFrame
+        signals_details, total_score = self._get_indicator_signals_and_score(df_clean)
 
-        latest_candle = df_with_indicators.iloc[-1]
+        latest_candle = df_clean.iloc[-1]
         current_price = latest_candle.get('close')
         current_atr = latest_candle.get(f'ATR_{settings.ATR_PERIOD}')
 
         if current_price is None or pd.isna(current_price):
             return {}
 
+        # 4. Determine overall signal and exit levels
         overall_signal, suggested_sl, suggested_tp = self._determine_overall_signal_and_exits(
             total_score, current_price, current_atr
         )
 
+        # 5. Return the final, structured result
         return {
             "signals_details": signals_details,
             "total_score": total_score,
@@ -46,22 +55,39 @@ class MultiIndicatorStrategy(TradingStrategy):
         }
 
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculates all necessary indicators and appends them to the DataFrame."""
-        if df is None or df.empty: return pd.DataFrame()
+        """
+        Private helper method to calculate and append all necessary indicators to the DataFrame.
+        This version includes detailed debugging.
+        """
+        if df is None or df.empty:
+            return pd.DataFrame()
 
         # pandas_ta's append=True argument adds the column directly to the dataframe.
         # This simplifies the indicator calculation block.
         df.ta.rsi(length=settings.RSI_PERIOD, append=True)
-        df.ta.macd(fast=settings.MACD_FAST_PERIOD, slow=settings.MACD_SLOW_PERIOD, signal=settings.MACD_SIGNAL_PERIOD,
-                   append=True)
+
+        macd = df.ta.macd(fast=settings.MACD_FAST_PERIOD, slow=settings.MACD_SLOW_PERIOD,
+                          signal=settings.MACD_SIGNAL_PERIOD)
+        if macd is not None and not macd.empty:
+            df = df.join(macd)
+
         df.ta.ema(length=settings.MA_SHORT_PERIOD, append=True)
         df.ta.ema(length=settings.MA_LONG_PERIOD, append=True)
-        df.ta.bbands(length=settings.BBANDS_PERIOD, std=settings.BBANDS_STD_DEV, append=True)
+
+        bbands = df.ta.bbands(length=settings.BBANDS_PERIOD, std=settings.BBANDS_STD_DEV)
+        if bbands is not None and not bbands.empty:
+            df = df.join(bbands)
+        else:
+            print(f"Warning: Bollinger Bands calculation failed. Creating empty columns.")
+            for col in [f'BBL_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}',
+                        f'BBM_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}',
+                        f'BBU_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}']:
+                df[col] = pd.NA
+
         df.ta.atr(length=settings.ATR_PERIOD, append=True)
 
         if 'volume' not in df.columns:
             df['volume'] = 0
-
         return df
 
     def _get_indicator_signals_and_score(self, df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], int]:
@@ -101,8 +127,10 @@ class MultiIndicatorStrategy(TradingStrategy):
         # 2. MACD Signal (Crossover)
         macd_line_key = f'MACD_{settings.MACD_FAST_PERIOD}_{settings.MACD_SLOW_PERIOD}_{settings.MACD_SIGNAL_PERIOD}'
         signal_line_key = f'MACDs_{settings.MACD_FAST_PERIOD}_{settings.MACD_SLOW_PERIOD}_{settings.MACD_SIGNAL_PERIOD}'
-        latest_macd, latest_signal = latest.get(macd_line_key), latest.get(signal_line_key)
-        prev_macd, prev_signal = previous.get(macd_line_key), previous.get(signal_line_key)
+        latest_macd = latest.get(macd_line_key)
+        latest_signal = latest.get(signal_line_key)
+        prev_macd = previous.get(macd_line_key)
+        prev_signal = previous.get(signal_line_key)
 
         if all(pd.notna(val) for val in [latest_macd, latest_signal, prev_macd, prev_signal]):
             score_change = 0;
@@ -145,7 +173,9 @@ class MultiIndicatorStrategy(TradingStrategy):
 
         # 4. Bollinger Bands Signal
         price_close = latest.get('close')
-        bbu_key, bbl_key = f'BBU_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}', f'BBL_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}'
+        std_dev_str = f"{float(settings.BBANDS_STD_DEV):.1f}"
+        bbu_key = f'BBU_{settings.BBANDS_PERIOD}_{std_dev_str}'
+        bbl_key = f'BBL_{settings.BBANDS_PERIOD}_{std_dev_str}'
         latest_bbu, latest_bbl = latest.get(bbu_key), latest.get(bbl_key)
 
         if pd.notna(price_close) and all(pd.notna(val) for val in [latest_bbu, latest_bbl]):

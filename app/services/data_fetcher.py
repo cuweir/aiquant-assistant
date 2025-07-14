@@ -27,6 +27,11 @@ class DataFetcher:
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                 df.set_index('timestamp', inplace=True)
+                cols_to_convert = ['open', 'high', 'low', 'close', 'volume']
+                for col in cols_to_convert:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+                df.dropna(subset=cols_to_convert, inplace=True)
                 return df
             return None
         except ccxt.NetworkError as e:
