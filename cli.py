@@ -18,15 +18,9 @@ API_PREFIX = "/api/v1"
 console = Console()
 
 
-# --- NEW HELPER FUNCTION ---
 def format_price_dynamically(price: float) -> str:
-    """
-    Dynamically formats the price based on its value to ensure appropriate precision.
-    Matches the logic on the server.
-    """
     if price is None or not isinstance(price, (int, float)):
         return "N/A"
-
     if price >= 100:
         return f"{price:.2f}"
     elif price >= 1:
@@ -37,14 +31,9 @@ def format_price_dynamically(price: float) -> str:
         return f"{price:.6f}"
 
 
-# --- END OF NEW HELPER FUNCTION ---
-
-# This helper is for non-price values, like RSI
 def format_value(value, precision=2):
-    if isinstance(value, float):
-        return f"{value:.{precision}f}"
-    if isinstance(value, (int, str)):
-        return str(value)
+    if isinstance(value, float): return f"{value:.{precision}f}"
+    if isinstance(value, (int, str)): return str(value)
     return "N/A"
 
 
@@ -61,7 +50,6 @@ async def display_analysis_nicely(analysis_data: dict, analysis_id: str = None):
     content_table.add_row("Symbol:", Text(symbol_from_data, style="magenta"))
     content_table.add_row("Timeframe:", Text(timeframe_from_data, style="magenta"))
 
-    # Use the new dynamic formatter for the price in the local signal display
     price_str = format_price_dynamically(analysis_data.get('price'))
     local_signal_text = Text()
     local_signal_text.append(str(analysis_data.get('local_signal', 'N/A')), style="yellow")
@@ -100,21 +88,33 @@ async def display_all_analyses():
                 console.print(f"[dim]Requesting: {url}[/dim]")
                 response = await client.get(url)
             response.raise_for_status()
-            data = response.json()
-            console.rule("[bold cyan]--- All Cached AI Analyses ---[/bold cyan]", style="cyan")
-            if data.get("analyses") and isinstance(data["analyses"], dict) and data["analyses"]:
+            analyses_list = response.json()  # <-- This is now a list
+
+            console.rule("[bold cyan]--- All Cached Analyses (from DB) ---[/bold cyan]", style="cyan")
+
+            # --- MODIFICATION START ---
+            # Check if the response is a list and if it's not empty
+            if isinstance(analyses_list, list) and analyses_list:
+                # The data is already a list of analysis dicts, so we can iterate directly.
+                # Sorting by timestamp is still a good idea, as list order isn't guaranteed.
                 try:
-                    sorted_analyses = sorted(data["analyses"].items(),
-                                             key=lambda item: item[1].get('timestamp', "1970-01-01T00:00:00"),
-                                             reverse=True)
+                    sorted_analyses = sorted(
+                        analyses_list,
+                        key=lambda item: item.get('timestamp', "1970-01-01T00:00:00"),
+                        reverse=True
+                    )
                 except Exception as e:
                     console.print(
                         f"[yellow]Could not sort analyses by timestamp: {e}. Displaying in received order.[/yellow]")
-                    sorted_analyses = list(data["analyses"].items())
-                for key, analysis in sorted_analyses:
-                    await display_analysis_nicely(analysis, analysis_id=key)
+                    sorted_analyses = analyses_list
+
+                for analysis in sorted_analyses:
+                    # We don't have a unique key like before, so we can pass None for analysis_id
+                    await display_analysis_nicely(analysis, analysis_id=None)
             else:
-                console.print("No analyses found in cache yet.", style="italic dim")
+                console.print("No analyses found in the database yet.", style="italic dim")
+            # --- MODIFICATION END ---
+
         except httpx.HTTPStatusError as e:
             console.print(f"[bold red]Error fetching analyses: {e.response.status_code} - {e.response.text}[/bold red]")
         except httpx.RequestError as e:
@@ -132,7 +132,6 @@ async def manual_trigger(symbol: str, timeframe: str):
                 url = f"{API_BASE_URL}{API_PREFIX}/trigger-analysis"
                 console.print(f"[dim]Requesting: {url}[/dim]")
                 response = await client.post(url, json=payload)
-                
             response.raise_for_status()
             analysis_data = response.json()
             console.rule("[bold cyan]--- Manually Triggered AI Analysis ---[/bold cyan]", style="cyan")

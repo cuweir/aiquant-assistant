@@ -66,14 +66,14 @@ class MultiIndicatorStrategy(TradingStrategy):
 
     def _get_indicator_signals_and_score(self, df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], int]:
         """
-        Analyzes the latest row of the DataFrame to generate signals and a composite score.
-        This is the FULL and COMPLETE implementation.
+        Analyzes the latest row of the DataFrame with indicators to generate signals and a composite score.
+        This version has more robust handling for NaN values.
         """
         signals_details: List[Dict[str, Any]] = []
         total_score = 0
         if len(df) < 2:
             signals_details.append(
-                {"indicator": "DataCheck", "signal": "NotEnoughData", "value": len(df), "score_change": 0})
+                {"indicator": "DataCheck", "signal": "INSUFFICIENT_DATA_ROWS", "value": len(df), "score_change": 0})
             return signals_details, total_score
 
         latest = df.iloc[-1]
@@ -83,36 +83,35 @@ class MultiIndicatorStrategy(TradingStrategy):
         rsi_key = f'RSI_{settings.RSI_PERIOD}'
         rsi_value = latest.get(rsi_key)
         if pd.notna(rsi_value):
-            score_change = 0
+            score_change = 0;
             signal_text = "NEUTRAL"
             if rsi_value < settings.RSI_OVERSOLD:
-                signal_text = "OVERSOLD_BUY"
+                signal_text = "OVERSOLD_BUY";
                 score_change = settings.WEIGHT_RSI_SIGNAL
             elif rsi_value > settings.RSI_OVERBOUGHT:
-                signal_text = "OVERBOUGHT_SELL"
+                signal_text = "OVERBOUGHT_SELL";
                 score_change = -settings.WEIGHT_RSI_SIGNAL
             total_score += score_change
             signals_details.append(
                 {"indicator": "RSI", "signal": signal_text, "value": rsi_value, "score_change": score_change})
         else:
             signals_details.append(
-                {"indicator": "RSI", "signal": "DATA_INSUFFICIENT", "value": "NaN", "score_change": 0})
+                {"indicator": "RSI", "signal": "DATA_UNAVAILABLE", "value": "NaN", "score_change": 0})
 
         # 2. MACD Signal (Crossover)
         macd_line_key = f'MACD_{settings.MACD_FAST_PERIOD}_{settings.MACD_SLOW_PERIOD}_{settings.MACD_SIGNAL_PERIOD}'
         signal_line_key = f'MACDs_{settings.MACD_FAST_PERIOD}_{settings.MACD_SLOW_PERIOD}_{settings.MACD_SIGNAL_PERIOD}'
-        latest_macd = latest.get(macd_line_key)
-        latest_signal = latest.get(signal_line_key)
-        prev_macd = previous.get(macd_line_key)
-        prev_signal = previous.get(signal_line_key)
+        latest_macd, latest_signal = latest.get(macd_line_key), latest.get(signal_line_key)
+        prev_macd, prev_signal = previous.get(macd_line_key), previous.get(signal_line_key)
+
         if all(pd.notna(val) for val in [latest_macd, latest_signal, prev_macd, prev_signal]):
-            score_change = 0
+            score_change = 0;
             signal_text = "NO_CROSS"
             if prev_macd < prev_signal and latest_macd > latest_signal:
-                signal_text = "GOLDEN_CROSS_BUY"
+                signal_text = "GOLDEN_CROSS_BUY";
                 score_change = settings.WEIGHT_MACD_CROSS
             elif prev_macd > prev_signal and latest_macd < latest_signal:
-                signal_text = "DEATH_CROSS_SELL"
+                signal_text = "DEATH_CROSS_SELL";
                 score_change = -settings.WEIGHT_MACD_CROSS
             total_score += score_change
             signals_details.append({"indicator": "MACD_Cross", "signal": signal_text,
@@ -120,15 +119,13 @@ class MultiIndicatorStrategy(TradingStrategy):
                                     "score_change": score_change})
         else:
             signals_details.append(
-                {"indicator": "MACD_Cross", "signal": "DATA_INSUFFICIENT", "value": "NaN", "score_change": 0})
+                {"indicator": "MACD_Cross", "signal": "DATA_UNAVAILABLE", "value": "NaN", "score_change": 0})
 
-        # 3. MA Crossover Signal (EMA example)
-        short_ma_key = f'EMA_{settings.MA_SHORT_PERIOD}'
-        long_ma_key = f'EMA_{settings.MA_LONG_PERIOD}'
-        latest_short_ma = latest.get(short_ma_key)
-        latest_long_ma = latest.get(long_ma_key)
-        prev_short_ma = previous.get(short_ma_key)
-        prev_long_ma = previous.get(long_ma_key)
+        # 3. MA Crossover Signal
+        short_ma_key, long_ma_key = f'EMA_{settings.MA_SHORT_PERIOD}', f'EMA_{settings.MA_LONG_PERIOD}'
+        latest_short_ma, latest_long_ma = latest.get(short_ma_key), latest.get(long_ma_key)
+        prev_short_ma, prev_long_ma = previous.get(short_ma_key), previous.get(long_ma_key)
+
         if all(pd.notna(val) for val in [latest_short_ma, latest_long_ma, prev_short_ma, prev_long_ma]):
             score_change = 0
             signal_text = "NO_CROSS"
@@ -144,15 +141,14 @@ class MultiIndicatorStrategy(TradingStrategy):
                                     "score_change": score_change})
         else:
             signals_details.append(
-                {"indicator": "MA_Cross", "signal": "DATA_INSUFFICIENT", "value": "NaN", "score_change": 0})
+                {"indicator": "MA_Cross", "signal": "DATA_UNAVAILABLE", "value": "NaN", "score_change": 0})
 
         # 4. Bollinger Bands Signal
         price_close = latest.get('close')
-        bbu_key = f'BBU_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}'
-        bbl_key = f'BBL_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}'
-        latest_bbu = latest.get(bbu_key)
-        latest_bbl = latest.get(bbl_key)
-        if price_close is not None and pd.notna(price_close) and all(pd.notna(val) for val in [latest_bbu, latest_bbl]):
+        bbu_key, bbl_key = f'BBU_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}', f'BBL_{settings.BBANDS_PERIOD}_{settings.BBANDS_STD_DEV}'
+        latest_bbu, latest_bbl = latest.get(bbu_key), latest.get(bbl_key)
+
+        if pd.notna(price_close) and all(pd.notna(val) for val in [latest_bbu, latest_bbl]):
             score_change = 0
             signal_text = "INSIDE_BANDS"
             if price_close > latest_bbu:
@@ -167,31 +163,26 @@ class MultiIndicatorStrategy(TradingStrategy):
                                     "score_change": score_change})
         else:
             signals_details.append(
-                {"indicator": "BollingerBands", "signal": "DATA_INSUFFICIENT", "value": "NaN", "score_change": 0})
+                {"indicator": "BollingerBands", "signal": "DATA_UNAVAILABLE", "value": "NaN", "score_change": 0})
 
-        # 5. Volume Confirmation (Informational, not directly adding to score in this simplified version)
+        # 5. Volume Confirmation
         volume_latest = latest.get('volume')
-        if volume_latest is not None and pd.notna(volume_latest):
+        if pd.notna(volume_latest):
             avg_volume_period = 5
-            signal_text = "VOLUME_DATA_UNAVAILABLE"
+            signal_text = "NOT_ENOUGH_DATA_FOR_AVG";
             vol_value_str = f"Vol:{volume_latest:.2f}"
             if len(df) > avg_volume_period + 1:
                 avg_volume = df['volume'].iloc[-(avg_volume_period + 1):-1].mean()
                 if pd.notna(avg_volume) and avg_volume > 0:
                     vol_value_str = f"Vol:{volume_latest:.2f},Avg5P:{avg_volume:.2f}"
-                    if volume_latest > avg_volume * 1.5:
-                        signal_text = "HIGH_VOLUME"
-                    else:
-                        signal_text = "NORMAL_OR_LOW_VOLUME"
+                    signal_text = "HIGH_VOLUME" if volume_latest > avg_volume * 1.5 else "NORMAL_OR_LOW_VOLUME"
                 else:
                     signal_text = "VOLUME_AVG_NOT_CALCULABLE"
-            else:
-                signal_text = "NOT_ENOUGH_DATA_FOR_VOLUME_AVG"
             signals_details.append(
                 {"indicator": "Volume", "signal": signal_text, "value": vol_value_str, "score_change": 0})
         else:
             signals_details.append(
-                {"indicator": "Volume", "signal": "DATA_INSUFFICIENT", "value": "NaN", "score_change": 0})
+                {"indicator": "Volume", "signal": "DATA_UNAVAILABLE", "value": "NaN", "score_change": 0})
 
         return signals_details, total_score
 
