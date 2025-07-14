@@ -1,6 +1,6 @@
 import pandas as pd
 from typing import Dict, Any, List
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 import json
 from .data_fetcher import data_fetcher_instance
 from ..core.config import settings
@@ -193,10 +193,10 @@ class AnalysisService:
 
     def get_all_analyses_from_db(self, db: Session, skip: int = 0, limit: int = 20) -> List[AnalysisResult]:
         """Fetches a paginated list of analysis results from the database."""
-        # Eagerly load related symbol and strategy to avoid multiple queries
+        # 2. Use joinedload directly after importing it.
         return db.query(AnalysisResult).options(
-            pd.orm.joinedload(AnalysisResult.symbol),
-            pd.orm.joinedload(AnalysisResult.strategy)
+            joinedload(AnalysisResult.symbol),
+            joinedload(AnalysisResult.strategy)
         ).order_by(AnalysisResult.timestamp.desc()).offset(skip).limit(limit).all()
 
     async def close_llm_resources(self):
