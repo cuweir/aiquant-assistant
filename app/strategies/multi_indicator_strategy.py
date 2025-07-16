@@ -34,8 +34,9 @@ class MultiIndicatorStrategy(TradingStrategy):
 
         latest_candle = df_clean.iloc[-1]
         current_price = latest_candle.get('close')
-        current_atr = latest_candle.get(f'ATR_{settings.ATR_PERIOD}')
 
+        atr_key = f'ATRr_{settings.ATR_PERIOD}'
+        current_atr = latest_candle.get(atr_key)
         if current_price is None or pd.isna(current_price):
             return {}
 

@@ -11,7 +11,7 @@ from rich.table import Table
 
 load_dotenv()
 
-API_BASE_URL = os.getenv("API_SERVER_IP", "http://PLACEHOLDER_IP:8000")
+SERVER_PUBLIC_IP = os.getenv("SERVER_PUBLIC_IP", "http://PLACEHOLDER_IP:8000")
 
 
 API_PREFIX = "/api/v1"
@@ -84,7 +84,7 @@ async def display_all_analyses():
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             with console.status("[bold green]Fetching all cached analyses...[/bold green]", spinner="dots"):
-                url = f"{API_BASE_URL}{API_PREFIX}/get-all-analyses"
+                url = f"{SERVER_PUBLIC_IP}{API_PREFIX}/get-all-analyses"
                 console.print(f"[dim]Requesting: {url}[/dim]")
                 response = await client.get(url)
             response.raise_for_status()
@@ -129,7 +129,7 @@ async def manual_trigger(symbol: str, timeframe: str):
         try:
             with console.status(f"[bold green]Triggering analysis for {symbol} on {timeframe}...[/bold green]",
                                 spinner="dots"):
-                url = f"{API_BASE_URL}{API_PREFIX}/trigger-analysis"
+                url = f"{SERVER_PUBLIC_IP}{API_PREFIX}/trigger-analysis"
                 console.print(f"[dim]Requesting: {url}[/dim]")
                 response = await client.post(url, json=payload)
             response.raise_for_status()
@@ -146,7 +146,7 @@ async def manual_trigger(symbol: str, timeframe: str):
 
 
 async def main_cli_loop():
-    console.print(f"[bold green]AI Quant Assistant CLI - Connecting to: {API_BASE_URL}[/bold green]")
+    console.print(f"[bold green]AI Quant Assistant CLI - Connecting to: {SERVER_PUBLIC_IP}[/bold green]")
     console.print("Ensure the FastAPI server is running and accessible.")
     console.rule(style="green")
     while True:
@@ -172,8 +172,8 @@ async def main_cli_loop():
 
 
 if __name__ == "__main__":
-    if "YOUR_AWS_LIGHTSAIL_IP" in API_BASE_URL:
-        console.print("[bold red]ERROR: API_BASE_URL in cli.py has not been updated![/bold red]")
+    if "YOUR_AWS_LIGHTSAIL_IP" in SERVER_PUBLIC_IP:
+        console.print("[bold red]ERROR: SERVER_PUBLIC_IP in cli.py has not been updated![/bold red]")
         console.print("Please edit cli.py and replace 'YOUR_AWS_LIGHTSAIL_IP' with your server's actual IP address.")
         exit(1)
     try:

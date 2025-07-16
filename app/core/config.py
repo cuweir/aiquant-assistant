@@ -6,6 +6,7 @@ load_dotenv()
 class Settings:
     PROJECT_NAME: str = "AI Quant Assistant"
     PROJECT_VERSION: str = "0.4.0" # Version up for DB persistence
+    SERVER_PUBLIC_IP: str = os.getenv("SERVER_PUBLIC_IP")
 
     # --- Database ---
     DATABASE_URL: str = os.getenv("DATABASE_URL")
