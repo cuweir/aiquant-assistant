@@ -122,6 +122,10 @@ class AnalysisService:
                 "ai_analysis": db_analysis_result.llm_analysis,
                 "rsi": next((d['value'] for d in strategy_result['signals_details'] if d['indicator'] == 'RSI'),
                             float('nan')),
+                "details": {
+                    "composite_score": db_analysis_result.composite_score,
+                    "individual_signals_details": db_analysis_result.indicator_details
+                }
             }
         except Exception as e:
             print(f"Database Error: Failed to save analysis for {symbol_name}. Error: {e}")

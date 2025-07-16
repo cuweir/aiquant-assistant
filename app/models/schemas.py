@@ -1,6 +1,17 @@
-from pydantic import BaseModel
+import pandas as pd
+from pydantic import BaseModel, field_validator
 from typing import Optional, List, Dict, Any
 import datetime
+
+class SignalDetail(BaseModel):
+    indicator: str
+    signal: str
+    value: Any # Can be float or string
+    score_change: int
+
+class AnalysisDetails(BaseModel):
+    composite_score: int
+    individual_signals_details: List[SignalDetail]
 
 class SignalInput(BaseModel):
     symbol: str
@@ -19,12 +30,19 @@ class AIAnalysisOutput(BaseModel):
     symbol: str
     timeframe: str
     local_signal: str
-    rsi: float
+    rsi: Optional[float] = None
     price: float
     ai_analysis: str
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
+    details: Optional[AnalysisDetails] = None
     # prompt: Optional[str] = None # Optionally include for debugging
 
-class AllAnalysesOutput(BaseModel):
-    analyses: Dict[str, AIAnalysisOutput]
+    # Pydantic v2 aotmatically handles timezone conversion if the string is correctly formatted.
+    # The custom validator can be simplified or removed if input is always timezone-aware.
+    @field_validator('rsi', mode='before')
+    @classmethod
+    def rsi_must_be_float_or_none(cls, v):
+        if v is not None and pd.isna(v):
+            return None
+        return v
