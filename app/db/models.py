@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Numeric, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Numeric, ForeignKey, Index, Float
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -37,7 +37,7 @@ class AnalysisResult(Base):
     strategy_id = Column(Integer, ForeignKey("strategies.id"), nullable=False, index=True)
     timeframe = Column(String, nullable=False)
     current_price = Column(Numeric(18, 8), nullable=False)  # Example precision
-    composite_score = Column(Integer)
+    composite_score = Column(Float)
     overall_signal = Column(String)
     suggested_sl = Column(Numeric(18, 8))
     suggested_tp = Column(Numeric(18, 8))

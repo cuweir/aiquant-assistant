@@ -7,10 +7,10 @@ class SignalDetail(BaseModel):
     indicator: str
     signal: str
     value: Any # Can be float or string
-    score_change: int
+    score_change: float
 
 class AnalysisDetails(BaseModel):
-    composite_score: int
+    composite_score: float
     individual_signals_details: List[SignalDetail]
 
 class SignalInput(BaseModel):

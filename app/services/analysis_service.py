@@ -95,7 +95,7 @@ class AnalysisService:
                 strategy_id=strategy_record.id,
                 timeframe=timeframe,
                 current_price=current_price_float,
-                composite_score=int(strategy_result['total_score']),
+                composite_score=strategy_result['total_score'],
                 overall_signal=strategy_result['overall_signal'],
                 suggested_sl=suggested_sl_float,
                 suggested_tp=suggested_tp_float,
@@ -123,7 +123,7 @@ class AnalysisService:
                 "rsi": next((d['value'] for d in strategy_result['signals_details'] if d['indicator'] == 'RSI'),
                             float('nan')),
                 "details": {
-                    "composite_score": db_analysis_result.composite_score,
+                    "composite_score": float(db_analysis_result.composite_score),
                     "individual_signals_details": db_analysis_result.indicator_details
                 }
             }

@@ -49,9 +49,17 @@ class Settings:
     WEIGHT_RSI_SIGNAL: int = 1
     WEIGHT_MACD_CROSS: int = 1
     WEIGHT_MA_CROSS: int = 2
-    WEIGHT_BBANDS_BREAKOUT: int = 1
-    BUY_SCORE_THRESHOLD: int = 3
-    SELL_SCORE_THRESHOLD: int = -3
+    # Weights for the new "Stateful" scoring model
+    WEIGHT_MA_STATE: int = 1  # Score for being in a golden/death cross state
+    WEIGHT_MA_EVENT: int = 1  # Bonus score for the moment of crossover
+    WEIGHT_MACD_STATE: int = 1  # Score for MACD line being above/below signal line
+    WEIGHT_MACD_EVENT: int = 1  # Bonus score for the moment of crossover
+    WEIGHT_RSI_EXTREME: int = 2  # Score for being in overbought/oversold
+    WEIGHT_RSI_TREND: float = 0.5  # Score for being in bullish/bearish zone (above/below 50)
+    WEIGHT_BBANDS_BREAKOUT: int = 1  # Score for breaking out of the bands
+    # New Thresholds for the stateful model
+    BUY_SCORE_THRESHOLD: int = 4
+    SELL_SCORE_THRESHOLD: int = -4
 
 settings = Settings()
 
