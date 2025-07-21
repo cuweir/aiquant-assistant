@@ -24,20 +24,23 @@ class Settings:
     # OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
     # OPENAI_MODEL_NAME: str = os.getenv("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
 
-    # --- Strategy & Exit Parameters ---
-    DEFAULT_TIMEFRAME: str = "1h"
-    SIGNAL_TIMEFRAME: str = "1h" # The timeframe for generating entry signals
-    TREND_TIMEFRAME: str = "4h"  # The timeframe for determining the major trend
+    # --- Timeframe Configuration ---
+    SIGNAL_TIMEFRAME: str = "15m"
+    TREND_TIMEFRAME_SHORT: str = "1h"
+    TREND_TIMEFRAME_LONG: str = "4h"
 
     SYMBOLS_TO_MONITOR: list[str] = [
         "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
     ]
-    # --- Multi-Timeframe Analysis (MTFA) Filter ---
-    TREND_FILTER_PERIOD: int = 50 # e.g., use the 50-period EMA on the TREND_TIMEFRAME
-    # ... (RSI, MACD, MA, BBANDS parameters as before) ...
+
+    # --- Trend Filter Parameters ---
+    TREND_FILTER_PERIOD_SHORT: int = 50  # e.g., use 50-EMA on the 1h chart
+    TREND_FILTER_PERIOD_LONG: int = 50  # e.g., use 50-EMA on the 4h chart
+
+    # --- Indicator Parameters (for Signal Timeframe) ---
     RSI_PERIOD: int = 14
-    RSI_OVERBOUGHT: int = 70
-    RSI_OVERSOLD: int = 30
+    RSI_OVERBOUGHT: int = 75 # Stricter for shorter timeframe
+    RSI_OVERSOLD: int = 25   # Stricter for shorter timeframe
     MACD_FAST_PERIOD: int = 12
     MACD_SLOW_PERIOD: int = 26
     MACD_SIGNAL_PERIOD: int = 9
@@ -45,26 +48,31 @@ class Settings:
     MA_LONG_PERIOD: int = 30
     BBANDS_PERIOD: int = 20
     BBANDS_STD_DEV: int = 2
-    WEIGHT_VOLUME_CONFIRMATION: int = 1
+
+    # --- Scoring Weights for the Stateful Model ---
+    WEIGHT_MA_STATE: int = 1
+    WEIGHT_MA_EVENT: int = 1
+    WEIGHT_MACD_STATE: int = 1
+    WEIGHT_MACD_EVENT: int = 1
+    WEIGHT_RSI_EXTREME: int = 2
+    WEIGHT_RSI_TREND: float = 0.5
+    WEIGHT_BBANDS_BREAKOUT: int = 1
+
+    # --- Market Regime Score Multipliers ---
+    # In a strong bull market, amplify buy signals
+    REGIME_STRONG_BULL_MULTIPLIER: float = 1.2
+    # In a bullish pullback, give a large bonus to reversal (buy) signals
+    REGIME_BULLISH_PULLBACK_RSI_BONUS: int = 3
+    REGIME_BULLISH_PULLBACK_MACD_BONUS: int = 2
+
+    # --- Thresholds ---
+    BUY_SCORE_THRESHOLD: int = 4
+    SELL_SCORE_THRESHOLD: int = -4
+
+    # --- Exit Strategy Parameters ---
     ATR_PERIOD: int = 14
     ATR_STOP_LOSS_MULTIPLIER: float = 2.0
     RISK_REWARD_RATIO: float = 2.0
-
-    # --- Scoring ---
-    WEIGHT_RSI_SIGNAL: int = 1
-    WEIGHT_MACD_CROSS: int = 1
-    WEIGHT_MA_CROSS: int = 2
-    # Weights for the new "Stateful" scoring model
-    WEIGHT_MA_STATE: int = 1  # Score for being in a golden/death cross state
-    WEIGHT_MA_EVENT: int = 1  # Bonus score for the moment of crossover
-    WEIGHT_MACD_STATE: int = 1  # Score for MACD line being above/below signal line
-    WEIGHT_MACD_EVENT: int = 1  # Bonus score for the moment of crossover
-    WEIGHT_RSI_EXTREME: int = 2  # Score for being in overbought/oversold
-    WEIGHT_RSI_TREND: float = 0.5  # Score for being in bullish/bearish zone (above/below 50)
-    WEIGHT_BBANDS_BREAKOUT: int = 1  # Score for breaking out of the bands
-    # New Thresholds for the stateful model
-    BUY_SCORE_THRESHOLD: int = 4
-    SELL_SCORE_THRESHOLD: int = -4
 
 settings = Settings()
 

@@ -1,7 +1,7 @@
 import pandas as pd
 from typing import Dict, Any, List
 from sqlalchemy.orm import Session, joinedload
-import json
+import asyncio
 from .data_fetcher import data_fetcher_instance
 from ..core.config import settings
 from ..llm_providers import get_llm_strategy
@@ -43,114 +43,97 @@ class AnalysisService:
             db.refresh(strategy)
         return strategy
 
-    async def generate_comprehensive_analysis(
-            self,
-            symbol_name: str,
-            signal_timeframe: str = settings.SIGNAL_TIMEFRAME,
-            trend_timeframe: str = settings.TREND_TIMEFRAME
-    ) -> Dict[str, Any] | None:
-        """
-        The main orchestration method. Fetches data, runs strategy, calls LLM, and saves to DB.
-        """
-        # 1. Fetch market data
+    async def generate_comprehensive_analysis(self, symbol_name: str) -> Dict[str, Any] | None:
+        """Orchestration method for MTFA, fetching data for three timeframes."""
         limit_needed = 200
-        df_signal = await self.data_fetcher.fetch_ohlcv(
-            symbol_name, signal_timeframe, limit=limit_needed
-        )
-        df_trend = await self.data_fetcher.fetch_ohlcv(
-            symbol_name, trend_timeframe, limit=limit_needed
+
+        df_signal_task = self.data_fetcher.fetch_ohlcv(symbol_name, settings.SIGNAL_TIMEFRAME, limit=limit_needed)
+        df_trend_short_task = self.data_fetcher.fetch_ohlcv(symbol_name, settings.TREND_TIMEFRAME_SHORT,
+                                                            limit=limit_needed)
+        df_trend_long_task = self.data_fetcher.fetch_ohlcv(symbol_name, settings.TREND_TIMEFRAME_LONG,
+                                                           limit=limit_needed)
+
+        df_signal, df_trend_short, df_trend_long = await asyncio.gather(
+            df_signal_task, df_trend_short_task, df_trend_long_task
         )
 
-        if df_signal is None or df_signal.empty or df_trend is None or df_trend.empty:
-            print(f"Could not fetch sufficient OHLCV data for both timeframes for {symbol_name}.")
+        if any(df is None or df.empty for df in [df_signal, df_trend_short, df_trend_long]):
+            print(f"Could not fetch sufficient OHLCV data for all MTFA timeframes for {symbol_name}.")
             return None
 
-        # Add metadata to DataFrames for clarity (optional but good practice)
-        df_signal.attrs['symbol'] = symbol_name
-        df_trend.attrs['symbol'] = symbol_name
-        # 2. Generate signals from the trading strategy using both DataFrames
-        strategy_result = await self.trading_strategy.generate_signals(df_signal, df_trend)
+        strategy_result = await self.trading_strategy.generate_signals(df_signal, df_trend_short, df_trend_long)
         if not strategy_result:
             print(f"Strategy failed to generate signals for {symbol_name}.")
             return None
 
-        price_str = format_price_dynamically(strategy_result['current_price'])
-        original_score = strategy_result['total_score']
+        # 2. <-- DEFINE VARIABLES NEEDED LATER
         final_signal = strategy_result['overall_signal']
+        original_score = strategy_result['total_score']
+        current_price = strategy_result['current_price']
 
+        price_str = format_price_dynamically(current_price)
         print(
-            f"Analysis for {symbol_name} ({signal_timeframe}/{trend_timeframe}): Price={price_str},"
-            f" Original Score={original_score:.1f}, Final Signal: {final_signal}")
+            f"Analysis for {symbol_name} ({settings.SIGNAL_TIMEFRAME}): Price={price_str}, Score={original_score:.1f}, Signal: {final_signal}")
+
         ai_suggestion = "AI analysis not triggered due to neutral or filtered signal."
         should_call_llm = final_signal in ["POTENTIAL_BUY", "POTENTIAL_SELL"]
 
         if should_call_llm:
-            print(f"  Signal is valid and aligned with trend. Querying LLM...")
+            print(f"  Signal is valid. Querying LLM...")
             prompt = self._build_llm_prompt(symbol_name, settings.SIGNAL_TIMEFRAME, strategy_result, df_signal)
             ai_suggestion = await self.llm_strategy.generate_analysis(prompt)
 
-        # 4. Save the result to the database
         db: Session = SessionLocal()
         try:
-            # Get or create related records for foreign keys
             strategy_config = {"atr_sl_multiplier": settings.ATR_STOP_LOSS_MULTIPLIER,
                                "rr_ratio": settings.RISK_REWARD_RATIO}
             symbol_record = self._get_or_create_symbol(db, symbol_name)
-            strategy_record = self._get_or_create_strategy(db, "multi_indicator_v1.1", strategy_config)
-
-            current_price_float = float(strategy_result['current_price']) if pd.notna(
-                strategy_result['current_price']) else None
-            suggested_sl_float = float(strategy_result['suggested_sl']) if pd.notna(
-                strategy_result['suggested_sl']) else None
-            suggested_tp_float = float(strategy_result['suggested_tp']) if pd.notna(
-                strategy_result['suggested_tp']) else None
+            strategy_record = self._get_or_create_strategy(db, "multi_indicator_v1.2_mtfa", strategy_config)
 
             db_analysis_result = AnalysisResult(
-                timeframe=signal_timeframe,
-                timestamp=pd.Timestamp.now(tz='UTC').to_pydatetime(),  # Convert to python datetime
+                timestamp=pd.Timestamp.now(tz='UTC').to_pydatetime(),
                 symbol_id=symbol_record.id,
                 strategy_id=strategy_record.id,
-                current_price=current_price_float,
+                timeframe=settings.SIGNAL_TIMEFRAME,  # <-- 3. USE CORRECT TIMEFRAME
+                current_price=current_price,
                 composite_score=original_score,
                 overall_signal=final_signal,
-                suggested_sl=suggested_sl_float,
-                suggested_tp=suggested_tp_float,
+                suggested_sl=strategy_result['suggested_sl'],
+                suggested_tp=strategy_result['suggested_tp'],
                 llm_queried=should_call_llm,
                 llm_analysis=ai_suggestion,
-                indicator_details=strategy_result['signals_details']  # Save the detailed list as JSONB
+                indicator_details=strategy_result['signals_details']
             )
 
             db.add(db_analysis_result)
             db.commit()
             db.refresh(db_analysis_result)
-            print(f"Analysis for {symbol_name} successfully saved to database with ID: {db_analysis_result.id}")
+            print(f"Analysis for {symbol_name} successfully saved to database.")
 
-            # 5. Prepare a dictionary to return to the API layer (for immediate response)
-            # This dict must match the AIAnalysisOutput Pydantic schema
             return {
                 "timestamp": db_analysis_result.timestamp,
                 "symbol": symbol_name,
-                "timeframe": signal_timeframe,
+                "timeframe": settings.SIGNAL_TIMEFRAME,  # <-- 4. USE CORRECT TIMEFRAME
                 "local_signal": final_signal,
-                "price": float(db_analysis_result.current_price),  # Convert Numeric to float
-                "stop_loss": float(db_analysis_result.suggested_sl) if db_analysis_result.suggested_sl else None,
-                "take_profit": float(db_analysis_result.suggested_tp) if db_analysis_result.suggested_tp else None,
-                "ai_analysis": db_analysis_result.llm_analysis,
+                "price": float(current_price),
+                "stop_loss": float(strategy_result['suggested_sl']) if strategy_result['suggested_sl'] else None,
+                "take_profit": float(strategy_result['suggested_tp']) if strategy_result['suggested_tp'] else None,
+                "ai_analysis": ai_suggestion,
                 "rsi": next((d['value'] for d in strategy_result['signals_details'] if d['indicator'] == 'RSI'),
                             float('nan')),
                 "details": {
                     "composite_score": original_score,
-                    "individual_signals_details": db_analysis_result.indicator_details
+                    "individual_signals_details": strategy_result['signals_details']
                 }
             }
         except Exception as e:
             print(f"Database Error: Failed to save analysis for {symbol_name}. Error: {e}")
-            import traceback
+            import traceback;
             traceback.print_exc()
-            db.rollback()  # Rollback the transaction on error
+            db.rollback()
             return None
         finally:
-            db.close()  # Always close the session
+            db.close()
 
     def _build_llm_prompt(self, symbol: str, timeframe: str, result: Dict[str, Any], df: pd.DataFrame) -> str:
         """
