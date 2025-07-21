@@ -50,10 +50,11 @@ class MultiIndicatorStrategy(TradingStrategy):
             return {}
         # 4. Determine exit levels based on the *final* filtered signal
         # Only calculate exits if the signal is not neutral/filtered
-        final_signal_label, suggested_sl, suggested_tp = "HOLD", None, None
+
+        suggested_sl, suggested_tp = None, None
         if not is_filtered and final_signal_label in ["POTENTIAL_BUY", "POTENTIAL_SELL"]:
             _, suggested_sl, suggested_tp = self._determine_overall_signal_and_exits(
-                total_score, current_price, current_atr, pre_approved_signal=final_signal_label
+                current_price, current_atr, pre_approved_signal=final_signal_label
             )
 
         return {
@@ -297,7 +298,7 @@ class MultiIndicatorStrategy(TradingStrategy):
 
         return signals_details, total_score
 
-    def _determine_overall_signal_and_exits(self, total_score: float, current_price: float, current_atr: float,
+    def _determine_overall_signal_and_exits(self, current_price: float, current_atr: float,
         pre_approved_signal: str) -> Tuple[str, float | None, float | None]:
         """
         Calculates exit prices for an already approved signal.
