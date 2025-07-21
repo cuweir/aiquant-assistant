@@ -75,12 +75,14 @@ class AnalysisService:
             return None
 
         price_str = format_price_dynamically(strategy_result['current_price'])
+        original_score = strategy_result['total_score']
+        final_signal = strategy_result['overall_signal']
+
         print(
-            f"Analysis for {symbol_name} ({signal_timeframe} / {trend_timeframe}): Price={price_str}, Score="
-            f"{strategy_result['total_score']:.1f}, Signal: {strategy_result['overall_signal']}")
-        # 3. Decide whether to call LLM and get AI suggestion
+            f"Analysis for {symbol_name} ({signal_timeframe}/{trend_timeframe}): Price={price_str},"
+            f" Original Score={original_score:.1f}, Final Signal: {final_signal}")
         ai_suggestion = "AI analysis not triggered due to neutral or filtered signal."
-        should_call_llm = strategy_result['overall_signal'] in ["POTENTIAL_BUY", "POTENTIAL_SELL"]
+        should_call_llm = final_signal in ["POTENTIAL_BUY", "POTENTIAL_SELL"]
 
         if should_call_llm:
             print(f"  Signal is valid and aligned with trend. Querying LLM...")
@@ -109,8 +111,8 @@ class AnalysisService:
                 symbol_id=symbol_record.id,
                 strategy_id=strategy_record.id,
                 current_price=current_price_float,
-                composite_score=strategy_result['total_score'],
-                overall_signal=strategy_result['overall_signal'],
+                composite_score=original_score,
+                overall_signal=final_signal,
                 suggested_sl=suggested_sl_float,
                 suggested_tp=suggested_tp_float,
                 llm_queried=should_call_llm,
@@ -129,7 +131,7 @@ class AnalysisService:
                 "timestamp": db_analysis_result.timestamp,
                 "symbol": symbol_name,
                 "timeframe": signal_timeframe,
-                "local_signal": db_analysis_result.overall_signal,
+                "local_signal": final_signal,
                 "price": float(db_analysis_result.current_price),  # Convert Numeric to float
                 "stop_loss": float(db_analysis_result.suggested_sl) if db_analysis_result.suggested_sl else None,
                 "take_profit": float(db_analysis_result.suggested_tp) if db_analysis_result.suggested_tp else None,
@@ -137,7 +139,7 @@ class AnalysisService:
                 "rsi": next((d['value'] for d in strategy_result['signals_details'] if d['indicator'] == 'RSI'),
                             float('nan')),
                 "details": {
-                    "composite_score": float(db_analysis_result.composite_score),
+                    "composite_score": original_score,
                     "individual_signals_details": db_analysis_result.indicator_details
                 }
             }

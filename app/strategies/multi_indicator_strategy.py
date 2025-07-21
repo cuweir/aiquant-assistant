@@ -39,8 +39,7 @@ class MultiIndicatorStrategy(TradingStrategy):
         })
 
         # 3. Apply the trend filter to the score and signal
-        original_score = total_score
-        overall_signal, total_score = self._apply_trend_filter(total_score, long_term_trend)
+        final_signal_label, is_filtered = self._apply_trend_filter(total_score, long_term_trend)
 
         latest_candle = df_clean.iloc[-1]
         current_price = latest_candle.get('close')
@@ -49,22 +48,20 @@ class MultiIndicatorStrategy(TradingStrategy):
 
         if current_price is None or pd.isna(current_price):
             return {}
-
         # 4. Determine exit levels based on the *final* filtered signal
         # Only calculate exits if the signal is not neutral/filtered
         final_signal_label, suggested_sl, suggested_tp = "HOLD", None, None
-        if overall_signal in ["POTENTIAL_BUY", "POTENTIAL_SELL"]:
-            final_signal_label, suggested_sl, suggested_tp = self._determine_overall_signal_and_exits(
-                total_score, current_price, current_atr, pre_approved_signal=overall_signal
+        if not is_filtered and final_signal_label in ["POTENTIAL_BUY", "POTENTIAL_SELL"]:
+            _, suggested_sl, suggested_tp = self._determine_overall_signal_and_exits(
+                total_score, current_price, current_atr, pre_approved_signal=final_signal_label
             )
-        else:
-            final_signal_label = overall_signal
 
         return {
             "signals_details": signals_details,
             "total_score": total_score,  # Return the final score after filtering
             "current_price": current_price,
             "overall_signal": final_signal_label,
+            "is_filtered": is_filtered,
             "suggested_sl": suggested_sl,
             "suggested_tp": suggested_tp,
         }
@@ -97,24 +94,24 @@ class MultiIndicatorStrategy(TradingStrategy):
         else:
             return "SIDEWAYS", trend_details
 
-    def _apply_trend_filter(self, score: float, trend: str) -> Tuple[str, float]:
+    def _apply_trend_filter(self, score: float, trend: str) -> Tuple[str, bool]:
         """Applies the trend filter logic."""
         is_buy_signal = score >= settings.BUY_SCORE_THRESHOLD
         is_sell_signal = score <= settings.SELL_SCORE_THRESHOLD
 
         if is_buy_signal and trend == "DOWNTREND":
             print(f"FILTERED: BUY signal (score: {score}) ignored due to DOWNTREND.")
-            return "HOLD_FILTERED_BY_TREND", 0.0  # Reset score
+            return "HOLD_FILTERED_BY_TREND", True  # Reset score
 
         if is_sell_signal and trend == "UPTREND":
             print(f"FILTERED: SELL signal (score: {score}) ignored due to UPTREND.")
-            return "HOLD_FILTERED_BY_TREND", 0.0  # Reset score
+            return "HOLD_FILTERED_BY_TREND", True  # Reset score
 
         # If signal is aligned with trend, or trend is neutral, let it pass
-        if is_buy_signal: return "POTENTIAL_BUY", score
-        if is_sell_signal: return "POTENTIAL_SELL", score
+        if is_buy_signal: return "POTENTIAL_BUY", False
+        if is_sell_signal: return "POTENTIAL_SELL", False
 
-        return "HOLD_OBSERVE_NEUTRAL_SCORE", score
+        return "HOLD_OBSERVE_NEUTRAL_SCORE", False
 
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """
