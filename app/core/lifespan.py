@@ -15,8 +15,7 @@ async def monitor_markets_periodically():
             for symbol in settings.SYMBOLS_TO_MONITOR:
                 print(f"Comprehensive check for symbol: {symbol}")
                 await analysis_service.generate_comprehensive_analysis(
-                    symbol_name=symbol,
-                    timeframe=settings.DEFAULT_TIMEFRAME
+                    symbol_name=symbol
                 )
         except Exception as e:
             print(f"Error in monitoring_markets_periodically: {e}")

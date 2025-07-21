@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
-from typing import List, Dict, Any
+from typing import List
 from sqlalchemy.orm import Session
 
 from ...models.schemas import SignalInput, AIAnalysisOutput, AnalysisDetails, SignalDetail
@@ -19,8 +19,8 @@ async def trigger_comprehensive_ai_analysis(
         service: AnalysisService = Depends(get_analysis_service)
 ):
     result_dict = await service.generate_comprehensive_analysis(
-        symbol=signal_input.symbol,
-        timeframe=signal_input.timeframe
+        symbol_name=signal_input.symbol,
+        signal_timeframe=signal_input.timeframe
     )
     if not result_dict:
         raise HTTPException(status_code=500, detail="Analysis could not be generated or saved.")

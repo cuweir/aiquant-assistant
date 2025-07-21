@@ -13,47 +13,108 @@ class MultiIndicatorStrategy(TradingStrategy):
     to generate a composite score and trading signals.
     """
 
-    async def generate_signals(self, df: pd.DataFrame) -> Dict[str, Any]:
+    async def generate_signals(self, df_signal: pd.DataFrame, df_trend: pd.DataFrame) -> Dict[str, Any]:
         """
         Public method to generate signals. It orchestrates the internal calculation
         and scoring logic.
         """
-        # 1. Calculate all indicators on the DataFrame
-        df_with_indicators = self._calculate_indicators(df.copy())
+        # 1. Determine the long-term trend from the trend DataFrame
+        long_term_trend, trend_details = self._get_long_term_trend(df_trend)
 
-        # 2. Drop all rows that have ANY NaN value after indicator calculation.
+        # 2. Calculate indicators and score on the signal DataFrame
+        df_with_indicators = self._calculate_indicators(df_signal.copy())
         df_clean = df_with_indicators.dropna()
 
         if len(df_clean) < 2:
-            print(
-                f"Warning: After dropping NaN rows, not enough data remains for signal generation. Original rows: {len(df)}, Clean rows: {len(df_clean)}")
+            print(f"Warning: Not enough clean signal data for {df_signal.attrs.get('symbol', 'N/A')}.")
             return {}
 
-        # 3. Generate signals and score using the cleaned DataFrame
         signals_details, total_score = self._get_indicator_signals_and_score(df_clean)
+        # Add trend info to the details
+        signals_details.append({
+            "indicator": "Trend_Filter",
+            "signal": long_term_trend,
+            "value": trend_details,
+            "score_change": 0
+        })
+
+        # 3. Apply the trend filter to the score and signal
+        original_score = total_score
+        overall_signal, total_score = self._apply_trend_filter(total_score, long_term_trend)
 
         latest_candle = df_clean.iloc[-1]
         current_price = latest_candle.get('close')
-
         atr_key = f'ATRr_{settings.ATR_PERIOD}'
         current_atr = latest_candle.get(atr_key)
+
         if current_price is None or pd.isna(current_price):
             return {}
 
-        # 4. Determine overall signal and exit levels
-        overall_signal, suggested_sl, suggested_tp = self._determine_overall_signal_and_exits(
-            total_score, current_price, current_atr
-        )
+        # 4. Determine exit levels based on the *final* filtered signal
+        # Only calculate exits if the signal is not neutral/filtered
+        final_signal_label, suggested_sl, suggested_tp = "HOLD", None, None
+        if overall_signal in ["POTENTIAL_BUY", "POTENTIAL_SELL"]:
+            final_signal_label, suggested_sl, suggested_tp = self._determine_overall_signal_and_exits(
+                total_score, current_price, current_atr, pre_approved_signal=overall_signal
+            )
+        else:
+            final_signal_label = overall_signal
 
-        # 5. Return the final, structured result
         return {
             "signals_details": signals_details,
-            "total_score": total_score,
+            "total_score": total_score,  # Return the final score after filtering
             "current_price": current_price,
-            "overall_signal": overall_signal,
+            "overall_signal": final_signal_label,
             "suggested_sl": suggested_sl,
             "suggested_tp": suggested_tp,
         }
+
+    def _get_long_term_trend(self, df_trend: pd.DataFrame) -> Tuple[str, str]:
+        """Determines the trend based on the long-term DataFrame."""
+        if df_trend is None or df_trend.empty:
+            return "NEUTRAL", "Trend data unavailable"
+
+        trend_ema_key = f"EMA_{settings.TREND_FILTER_PERIOD}"
+        df_trend[trend_ema_key] = df_trend.ta.ema(length=settings.TREND_FILTER_PERIOD)
+
+        df_trend_clean = df_trend.dropna()
+        if df_trend_clean.empty:
+            return "NEUTRAL", "Not enough trend data for EMA"
+
+        latest_trend_candle = df_trend_clean.iloc[-1]
+        price = latest_trend_candle.get('close')
+        trend_ema = latest_trend_candle.get(trend_ema_key)
+
+        if price is None or pd.isna(price) or pd.isna(trend_ema):
+            return "NEUTRAL", "Could not calculate trend EMA"
+
+        trend_details = f"Price:{format_price_dynamically(price)} vs EMA({settings.TREND_FILTER_PERIOD}):{format_price_dynamically(trend_ema)}"
+
+        if price > trend_ema:
+            return "UPTREND", trend_details
+        elif price < trend_ema:
+            return "DOWNTREND", trend_details
+        else:
+            return "SIDEWAYS", trend_details
+
+    def _apply_trend_filter(self, score: float, trend: str) -> Tuple[str, float]:
+        """Applies the trend filter logic."""
+        is_buy_signal = score >= settings.BUY_SCORE_THRESHOLD
+        is_sell_signal = score <= settings.SELL_SCORE_THRESHOLD
+
+        if is_buy_signal and trend == "DOWNTREND":
+            print(f"FILTERED: BUY signal (score: {score}) ignored due to DOWNTREND.")
+            return "HOLD_FILTERED_BY_TREND", 0.0  # Reset score
+
+        if is_sell_signal and trend == "UPTREND":
+            print(f"FILTERED: SELL signal (score: {score}) ignored due to UPTREND.")
+            return "HOLD_FILTERED_BY_TREND", 0.0  # Reset score
+
+        # If signal is aligned with trend, or trend is neutral, let it pass
+        if is_buy_signal: return "POTENTIAL_BUY", score
+        if is_sell_signal: return "POTENTIAL_SELL", score
+
+        return "HOLD_OBSERVE_NEUTRAL_SCORE", score
 
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -239,28 +300,23 @@ class MultiIndicatorStrategy(TradingStrategy):
 
         return signals_details, total_score
 
-    def _determine_overall_signal_and_exits(self, total_score: float, current_price: float, current_atr: float) -> Tuple[
-        str, float | None, float | None]:
-        """Determines the final signal and exit prices based on score and ATR."""
+    def _determine_overall_signal_and_exits(self, total_score: float, current_price: float, current_atr: float,
+        pre_approved_signal: str) -> Tuple[str, float | None, float | None]:
+        """
+        Calculates exit prices for an already approved signal.
+        """
         suggested_sl = None
         suggested_tp = None
 
-        is_buy_signal = total_score >= settings.BUY_SCORE_THRESHOLD
-        is_sell_signal = total_score <= settings.SELL_SCORE_THRESHOLD
-
-        if (is_buy_signal or is_sell_signal) and pd.notna(current_atr) and current_atr > 0:
+        if pd.notna(current_atr) and current_atr > 0:
             stop_loss_distance = settings.ATR_STOP_LOSS_MULTIPLIER * current_atr
             take_profit_distance = stop_loss_distance * settings.RISK_REWARD_RATIO
 
-            if is_buy_signal:
-                overall_signal = "POTENTIAL_BUY"
+            if pre_approved_signal == "POTENTIAL_BUY":
                 suggested_sl = current_price - stop_loss_distance
                 suggested_tp = current_price + take_profit_distance
-            else:  # is_sell_signal
-                overall_signal = "POTENTIAL_SELL"
+            elif pre_approved_signal == "POTENTIAL_SELL":
                 suggested_sl = current_price + stop_loss_distance
                 suggested_tp = current_price - take_profit_distance
-        else:  # No strong signal or ATR is invalid
-            overall_signal = "HOLD_OBSERVE_NEUTRAL_SCORE"
 
-        return overall_signal, suggested_sl, suggested_tp
+        return pre_approved_signal, suggested_sl, suggested_tp

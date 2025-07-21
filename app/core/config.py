@@ -5,7 +5,7 @@ load_dotenv()
 
 class Settings:
     PROJECT_NAME: str = "AI Quant Assistant"
-    PROJECT_VERSION: str = "0.4.0" # Version up for DB persistence
+    PROJECT_VERSION: str = "0.5.0" # Version up for DB persistence
     SERVER_PUBLIC_IP: str = os.getenv("SERVER_PUBLIC_IP")
 
     # --- Database ---
@@ -26,9 +26,14 @@ class Settings:
 
     # --- Strategy & Exit Parameters ---
     DEFAULT_TIMEFRAME: str = "1h"
+    SIGNAL_TIMEFRAME: str = "1h" # The timeframe for generating entry signals
+    TREND_TIMEFRAME: str = "4h"  # The timeframe for determining the major trend
+
     SYMBOLS_TO_MONITOR: list[str] = [
         "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
     ]
+    # --- Multi-Timeframe Analysis (MTFA) Filter ---
+    TREND_FILTER_PERIOD: int = 50 # e.g., use the 50-period EMA on the TREND_TIMEFRAME
     # ... (RSI, MACD, MA, BBANDS parameters as before) ...
     RSI_PERIOD: int = 14
     RSI_OVERBOUGHT: int = 70

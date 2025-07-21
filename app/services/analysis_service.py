@@ -43,34 +43,48 @@ class AnalysisService:
             db.refresh(strategy)
         return strategy
 
-    async def generate_comprehensive_analysis(self, symbol_name: str, timeframe: str) -> Dict[str, Any] | None:
+    async def generate_comprehensive_analysis(
+            self,
+            symbol_name: str,
+            signal_timeframe: str = settings.SIGNAL_TIMEFRAME,
+            trend_timeframe: str = settings.TREND_TIMEFRAME
+    ) -> Dict[str, Any] | None:
         """
         The main orchestration method. Fetches data, runs strategy, calls LLM, and saves to DB.
         """
         # 1. Fetch market data
-        limit_needed = 200  # A safe buffer for all indicators
-        df_ohlcv = await self.data_fetcher.fetch_ohlcv(symbol_name, timeframe, limit=limit_needed)
-        if df_ohlcv is None or df_ohlcv.empty:
-            print(f"No OHLCV data for {symbol_name} ({timeframe}).")
+        limit_needed = 200
+        df_signal = await self.data_fetcher.fetch_ohlcv(
+            symbol_name, signal_timeframe, limit=limit_needed
+        )
+        df_trend = await self.data_fetcher.fetch_ohlcv(
+            symbol_name, trend_timeframe, limit=limit_needed
+        )
+
+        if df_signal is None or df_signal.empty or df_trend is None or df_trend.empty:
+            print(f"Could not fetch sufficient OHLCV data for both timeframes for {symbol_name}.")
             return None
 
-        # 2. Generate signals from the trading strategy
-        strategy_result = await self.trading_strategy.generate_signals(df_ohlcv)
+        # Add metadata to DataFrames for clarity (optional but good practice)
+        df_signal.attrs['symbol'] = symbol_name
+        df_trend.attrs['symbol'] = symbol_name
+        # 2. Generate signals from the trading strategy using both DataFrames
+        strategy_result = await self.trading_strategy.generate_signals(df_signal, df_trend)
         if not strategy_result:
-            print(f"Strategy failed to generate signals for {symbol_name} ({timeframe}).")
+            print(f"Strategy failed to generate signals for {symbol_name}.")
             return None
 
         price_str = format_price_dynamically(strategy_result['current_price'])
         print(
-            f"Analysis for {symbol_name} ({timeframe}): Price={price_str}, Score={strategy_result['total_score']}, Signal: {strategy_result['overall_signal']}")
-
+            f"Analysis for {symbol_name} ({signal_timeframe} / {trend_timeframe}): Price={price_str}, Score="
+            f"{strategy_result['total_score']:.1f}, Signal: {strategy_result['overall_signal']}")
         # 3. Decide whether to call LLM and get AI suggestion
-        ai_suggestion = "AI analysis not triggered due to neutral local score."
+        ai_suggestion = "AI analysis not triggered due to neutral or filtered signal."
         should_call_llm = strategy_result['overall_signal'] in ["POTENTIAL_BUY", "POTENTIAL_SELL"]
 
         if should_call_llm:
-            print(f"  Local score met threshold. Querying LLM for {symbol_name}...")
-            prompt = self._build_llm_prompt(symbol_name, timeframe, strategy_result, df_ohlcv)
+            print(f"  Signal is valid and aligned with trend. Querying LLM...")
+            prompt = self._build_llm_prompt(symbol_name, settings.SIGNAL_TIMEFRAME, strategy_result, df_signal)
             ai_suggestion = await self.llm_strategy.generate_analysis(prompt)
 
         # 4. Save the result to the database
@@ -90,10 +104,10 @@ class AnalysisService:
                 strategy_result['suggested_tp']) else None
 
             db_analysis_result = AnalysisResult(
+                timeframe=signal_timeframe,
                 timestamp=pd.Timestamp.now(tz='UTC').to_pydatetime(),  # Convert to python datetime
                 symbol_id=symbol_record.id,
                 strategy_id=strategy_record.id,
-                timeframe=timeframe,
                 current_price=current_price_float,
                 composite_score=strategy_result['total_score'],
                 overall_signal=strategy_result['overall_signal'],
@@ -114,7 +128,7 @@ class AnalysisService:
             return {
                 "timestamp": db_analysis_result.timestamp,
                 "symbol": symbol_name,
-                "timeframe": timeframe,
+                "timeframe": signal_timeframe,
                 "local_signal": db_analysis_result.overall_signal,
                 "price": float(db_analysis_result.current_price),  # Convert Numeric to float
                 "stop_loss": float(db_analysis_result.suggested_sl) if db_analysis_result.suggested_sl else None,
