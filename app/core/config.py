@@ -70,7 +70,7 @@ class Settings:
     SELL_SCORE_THRESHOLD: int = -4
 
     # --- Exit Strategy Parameters ---
-    ATR_PERIOD: int = 14
+    ATR_PERIOD: int = 56
     ATR_STOP_LOSS_MULTIPLIER: float = 2.0
     RISK_REWARD_RATIO_TP1: float = 1.0  # Risk/Reward Ratio for the first Take Profit target
     RISK_REWARD_RATIO_TP2: float = 2.0  # Risk/Reward Ratio for the final Take Profit target
