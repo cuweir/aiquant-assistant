@@ -43,15 +43,22 @@ class AnalysisService:
             db.refresh(strategy)
         return strategy
 
-    async def generate_comprehensive_analysis(self, symbol_name: str) -> Dict[str, Any] | None:
-        """Orchestration method for MTFA, fetching data for three timeframes."""
+    async def generate_comprehensive_analysis(
+            self,
+            symbol_name: str,
+            signal_timeframe: str = settings.SIGNAL_TIMEFRAME,  # <-- Use config as default
+            trend_timeframe_short: str = settings.TREND_TIMEFRAME_SHORT,  # <-- Use config as default
+            trend_timeframe_long: str = settings.TREND_TIMEFRAME_LONG  # <-- Use config as default
+    ) -> Dict[str, Any] | None:
+        """
+        Orchestration method for MTFA.
+        Accepts optional timeframe overrides, otherwise uses defaults from settings.
+        """
         limit_needed = 200
 
-        df_signal_task = self.data_fetcher.fetch_ohlcv(symbol_name, settings.SIGNAL_TIMEFRAME, limit=limit_needed)
-        df_trend_short_task = self.data_fetcher.fetch_ohlcv(symbol_name, settings.TREND_TIMEFRAME_SHORT,
-                                                            limit=limit_needed)
-        df_trend_long_task = self.data_fetcher.fetch_ohlcv(symbol_name, settings.TREND_TIMEFRAME_LONG,
-                                                           limit=limit_needed)
+        df_signal_task = self.data_fetcher.fetch_ohlcv(symbol_name, signal_timeframe, limit=limit_needed)
+        df_trend_short_task = self.data_fetcher.fetch_ohlcv(symbol_name, trend_timeframe_short, limit=limit_needed)
+        df_trend_long_task = self.data_fetcher.fetch_ohlcv(symbol_name, trend_timeframe_long, limit=limit_needed)
 
         df_signal, df_trend_short, df_trend_long = await asyncio.gather(
             df_signal_task, df_trend_short_task, df_trend_long_task
@@ -66,21 +73,21 @@ class AnalysisService:
             print(f"Strategy failed to generate signals for {symbol_name}.")
             return None
 
-        # 2. <-- DEFINE VARIABLES NEEDED LATER
+        # Correctly define variables from strategy_result
         final_signal = strategy_result['overall_signal']
         original_score = strategy_result['total_score']
         current_price = strategy_result['current_price']
 
         price_str = format_price_dynamically(current_price)
         print(
-            f"Analysis for {symbol_name} ({settings.SIGNAL_TIMEFRAME}): Price={price_str}, Score={original_score:.1f}, Signal: {final_signal}")
+            f"Analysis for {symbol_name} ({signal_timeframe}): Price={price_str}, Score={original_score:.1f}, Signal: {final_signal}")
 
         ai_suggestion = "AI analysis not triggered due to neutral or filtered signal."
         should_call_llm = final_signal in ["POTENTIAL_BUY", "POTENTIAL_SELL"]
 
         if should_call_llm:
             print(f"  Signal is valid. Querying LLM...")
-            prompt = self._build_llm_prompt(symbol_name, settings.SIGNAL_TIMEFRAME, strategy_result, df_signal)
+            prompt = self._build_llm_prompt(symbol_name, signal_timeframe, strategy_result, df_signal)
             ai_suggestion = await self.llm_strategy.generate_analysis(prompt)
 
         db: Session = SessionLocal()
@@ -90,16 +97,28 @@ class AnalysisService:
             symbol_record = self._get_or_create_symbol(db, symbol_name)
             strategy_record = self._get_or_create_strategy(db, "multi_indicator_v1.2_mtfa", strategy_config)
 
+            db_current_price = float(current_price) if pd.notna(current_price) else None
+            db_composite_score = float(original_score) if pd.notna(original_score) else None
+            db_suggested_sl = float(strategy_result['suggested_sl']) if pd.notna(
+                strategy_result['suggested_sl']) else None
+            db_suggested_tp = float(strategy_result['suggested_tp']) if pd.notna(
+                strategy_result['suggested_tp']) else None
+
+            # Check if essential data is present before creating DB object
+            if db_current_price is None or db_composite_score is None:
+                print(f"Error: Price or Score is None for {symbol_name}, skipping DB save.")
+                return None
+
             db_analysis_result = AnalysisResult(
                 timestamp=pd.Timestamp.now(tz='UTC').to_pydatetime(),
                 symbol_id=symbol_record.id,
                 strategy_id=strategy_record.id,
-                timeframe=settings.SIGNAL_TIMEFRAME,  # <-- 3. USE CORRECT TIMEFRAME
-                current_price=current_price,
-                composite_score=original_score,
+                timeframe=signal_timeframe,
+                current_price=db_current_price,
+                composite_score=db_composite_score,
                 overall_signal=final_signal,
-                suggested_sl=strategy_result['suggested_sl'],
-                suggested_tp=strategy_result['suggested_tp'],
+                suggested_sl=db_suggested_sl,
+                suggested_tp=db_suggested_tp,
                 llm_queried=should_call_llm,
                 llm_analysis=ai_suggestion,
                 indicator_details=strategy_result['signals_details']
@@ -113,7 +132,7 @@ class AnalysisService:
             return {
                 "timestamp": db_analysis_result.timestamp,
                 "symbol": symbol_name,
-                "timeframe": settings.SIGNAL_TIMEFRAME,  # <-- 4. USE CORRECT TIMEFRAME
+                "timeframe": signal_timeframe,
                 "local_signal": final_signal,
                 "price": float(current_price),
                 "stop_loss": float(strategy_result['suggested_sl']) if strategy_result['suggested_sl'] else None,
