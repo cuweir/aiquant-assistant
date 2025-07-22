@@ -102,12 +102,15 @@ class AnalysisService:
 
             db_current_price = float(current_price) if pd.notna(current_price) else None
             db_composite_score = float(original_score) if pd.notna(original_score) else None
-            db_suggested_sl = float(strategy_result['suggested_sl']) if pd.notna(
-                strategy_result['suggested_sl']) else None
-            db_suggested_tp = float(strategy_result['suggested_tp']) if pd.notna(
-                strategy_result['suggested_tp']) else None
 
-            # Check if essential data is present before creating DB object
+            # Use .get() for safety and then cast
+            db_suggested_sl = float(strategy_result.get('suggested_sl')) if pd.notna(
+                strategy_result.get('suggested_sl')) else None
+            db_suggested_tp1 = float(strategy_result.get('suggested_tp1')) if pd.notna(
+                strategy_result.get('suggested_tp1')) else None
+            db_suggested_tp2 = float(strategy_result.get('suggested_tp2')) if pd.notna(
+                strategy_result.get('suggested_tp2')) else None
+
             if db_current_price is None or db_composite_score is None:
                 print(f"Error: Price or Score is None for {symbol_name}, skipping DB save.")
                 return None
@@ -121,11 +124,11 @@ class AnalysisService:
                 composite_score=db_composite_score,
                 overall_signal=final_signal,
                 suggested_sl=db_suggested_sl,
-                suggested_tp1=strategy_result['suggested_tp1'],
-                suggested_tp=strategy_result['suggested_tp2'],
+                suggested_tp1=db_suggested_tp1,  # Use correct column name
+                suggested_tp=db_suggested_tp2,  # Use correct column name
                 llm_queried=should_call_llm,
                 llm_analysis=ai_suggestion,
-                indicator_details=strategy_result['signals_details']
+                indicator_details=strategy_result.get('signals_details')
             )
 
             db.add(db_analysis_result)
@@ -133,21 +136,23 @@ class AnalysisService:
             db.refresh(db_analysis_result)
             print(f"Analysis for {symbol_name} successfully saved to database.")
 
+            # Prepare dictionary to return to the API layer
             return {
                 "timestamp": db_analysis_result.timestamp,
                 "symbol": symbol_name,
                 "timeframe": signal_timeframe,
                 "local_signal": final_signal,
-                "price": float(current_price),
-                "stop_loss": float(strategy_result['suggested_sl']) if strategy_result['suggested_sl'] else None,
-                "take_profit_1": float(db_analysis_result.suggested_tp1) if db_analysis_result.suggested_tp1 else None,
-                "take_profit": float(strategy_result['suggested_tp']) if strategy_result['suggested_tp'] else None,
+                "price": db_current_price,
+                "stop_loss": db_suggested_sl,
+                "take_profit_1": db_suggested_tp1,
+                "take_profit": db_suggested_tp2,
                 "ai_analysis": ai_suggestion,
-                "rsi": next((d['value'] for d in strategy_result['signals_details'] if d['indicator'] == 'RSI'),
-                            float('nan')),
+                "rsi": next(
+                    (d.get('value') for d in strategy_result.get('signals_details', []) if d.get('indicator') == 'RSI'),
+                    float('nan')),
                 "details": {
-                    "composite_score": original_score,
-                    "individual_signals_details": strategy_result['signals_details']
+                    "composite_score": db_composite_score,
+                    "individual_signals_details": strategy_result.get('signals_details', [])
                 }
             }
         except Exception as e:
