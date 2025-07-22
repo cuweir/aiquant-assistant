@@ -98,12 +98,12 @@ class MultiIndicatorStrategy(TradingStrategy):
         final_score = score
         if regime == "STRONG_BULL":
             if score > 0:
-                final_score *= settings.REGIME_STRONG_BULL_MULTIPLIER
+                final_score += settings.REGIME_STRONG_TREND_BONUS
             else:
                 final_score = 0
         elif regime == "STRONG_BEAR":
             if score < 0:
-                final_score *= settings.REGIME_STRONG_BULL_MULTIPLIER
+                final_score -= settings.REGIME_STRONG_TREND_BONUS
             else:
                 final_score = 0
         elif regime == "BULLISH_PULLBACK":

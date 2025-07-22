@@ -59,8 +59,8 @@ class Settings:
     WEIGHT_BBANDS_BREAKOUT: int = 1
 
     # --- Market Regime Score Multipliers ---
-    # In a strong bull market, amplify buy signals
-    REGIME_STRONG_BULL_MULTIPLIER: float = 1.2
+    # In a strong bull/bear market, give a bonus score to signals aligned with the trend.
+    REGIME_STRONG_TREND_BONUS: float = 1.5
     # In a bullish pullback, give a large bonus to reversal (buy) signals
     REGIME_BULLISH_PULLBACK_RSI_BONUS: int = 3
     REGIME_BULLISH_PULLBACK_MACD_BONUS: int = 2
