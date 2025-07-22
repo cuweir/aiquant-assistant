@@ -13,7 +13,7 @@ class DataFetcher:
             'secret': settings.BINANCE_API_SECRET,
             'enableRateLimit': True, # CCXT built-in rate limiter
             # 'options': {'defaultType': 'future'} # if you are trading futures
-            'aiohttp_proxy': 'http://127.0.0.1:7890',
+            # 'aiohttp_proxy': 'http://127.0.0.1:7890',
         })
         print(f"Initialized {self.exchange_id} Data Fetcher (Read-Only).")
 
