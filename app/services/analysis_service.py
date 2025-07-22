@@ -92,8 +92,11 @@ class AnalysisService:
 
         db: Session = SessionLocal()
         try:
-            strategy_config = {"atr_sl_multiplier": settings.ATR_STOP_LOSS_MULTIPLIER,
-                               "rr_ratio": settings.RISK_REWARD_RATIO}
+            strategy_config = {
+                "atr_sl_multiplier": settings.ATR_STOP_LOSS_MULTIPLIER,
+                "rr_ratio_tp1": settings.RISK_REWARD_RATIO_TP1,
+                "rr_ratio_tp2": settings.RISK_REWARD_RATIO_TP2
+            }
             symbol_record = self._get_or_create_symbol(db, symbol_name)
             strategy_record = self._get_or_create_strategy(db, "multi_indicator_v1.2_mtfa", strategy_config)
 
