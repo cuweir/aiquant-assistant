@@ -62,6 +62,7 @@ async def get_all_analyses_endpoint(
                 ai_analysis=r.llm_analysis,
                 stop_loss=float(r.suggested_sl) if r.suggested_sl else None,
                 take_profit=float(r.suggested_tp) if r.suggested_tp else None,
+                take_profit_1=float(r.suggested_tp1) if r.suggested_tp1 else None,
                 details=details_data
             )
         )

@@ -44,7 +44,6 @@ class MultiIndicatorStrategy(TradingStrategy):
         # 4. Apply regime-specific rules to adjust score and determine final signal
         final_signal, final_score = self._apply_regime_rules(base_score, market_regime, signals_details)
 
-        # 5. Determine exits and assemble final result
         latest_candle = df_clean.iloc[-1]
         current_price = latest_candle.get('close')
         atr_key = f'ATRr_{settings.ATR_PERIOD}'
@@ -60,12 +59,12 @@ class MultiIndicatorStrategy(TradingStrategy):
 
         return {
             "signals_details": signals_details,
-            "total_score": final_score,
+            "total_score": final_score,  # This is the final, regime-adjusted score.
             "current_price": current_price,
             "overall_signal": final_signal,
             "suggested_sl": suggested_sl,
-            "suggested_tp1": suggested_tp1,  # <-- ADDED
-            "suggested_tp2": suggested_tp2
+            "suggested_tp1": suggested_tp1,
+            "suggested_tp2": suggested_tp2,
         }
 
     @staticmethod
@@ -95,43 +94,62 @@ class MultiIndicatorStrategy(TradingStrategy):
         return "CHOPPY"
 
     @staticmethod
-    def _apply_regime_rules(score: float, regime: str, details: List[Dict]) -> Tuple[str, float]:
-        final_score = score
+    def _apply_regime_rules(base_score: float, regime: str, details: List[Dict]) -> Tuple[str, float]:
+        """
+        Applies regime-based adjustments to the base score to produce a final score and signal.
+        This is the clean, final, and correct implementation.
+        """
+        final_score = base_score
+
+        # --- Score Adjustment Logic ---
         if regime == "STRONG_BULL":
-            if score > 0:
+            if base_score > 0:
                 final_score += settings.REGIME_STRONG_TREND_BONUS
             else:
-                final_score = 0
+                final_score = 0  # Filter out counter-trend signals
+
         elif regime == "STRONG_BEAR":
-            if score < 0:
+            if base_score < 0:
                 final_score -= settings.REGIME_STRONG_TREND_BONUS
             else:
-                final_score = 0
+                final_score = 0  # Filter out counter-trend signals
+
         elif regime == "BULLISH_PULLBACK":
-            if score < 0: final_score = 0
+            if base_score < 0: final_score = 0  # Filter out signals that align with the short-term pullback
+
+            # Add bonus for reversal signals
             rsi_detail = next((d for d in details if d['indicator'] == 'RSI'), None)
             macd_detail = next((d for d in details if d['indicator'] == 'MACD'), None)
             if rsi_detail and "OVERSOLD" in rsi_detail['signal']:
                 final_score += settings.REGIME_BULLISH_PULLBACK_RSI_BONUS
             if macd_detail and "GOLDEN_CROSS" in macd_detail['signal']:
                 final_score += settings.REGIME_BULLISH_PULLBACK_MACD_BONUS
+
         elif regime == "BEARISH_RALLY":
-            if score > 0: final_score = 0
+            if base_score > 0: final_score = 0  # Filter out signals that align with the short-term rally
+
+            # Add bonus (negative) for reversal signals
             rsi_detail = next((d for d in details if d['indicator'] == 'RSI'), None)
             macd_detail = next((d for d in details if d['indicator'] == 'MACD'), None)
             if rsi_detail and "OVERBOUGHT" in rsi_detail['signal']:
                 final_score -= settings.REGIME_BULLISH_PULLBACK_RSI_BONUS
             if macd_detail and "DEATH_CROSS" in macd_detail['signal']:
                 final_score -= settings.REGIME_BULLISH_PULLBACK_MACD_BONUS
+
         elif regime == "CHOPPY":
-            final_score = 0
+            final_score = 0  # Filter out all signals in choppy markets
 
-        if final_score >= settings.BUY_SCORE_THRESHOLD: return "POTENTIAL_BUY", final_score
-        if final_score <= settings.SELL_SCORE_THRESHOLD: return "POTENTIAL_SELL", final_score
+        # --- Final Decision Logic ---
+        if final_score >= settings.BUY_SCORE_THRESHOLD:
+            return "POTENTIAL_BUY", final_score
+        if final_score <= settings.SELL_SCORE_THRESHOLD:
+            return "POTENTIAL_SELL", final_score
 
-        if regime != "CHOPPY" and score != final_score: return "HOLD_REGIME_ADJUSTED", final_score
-        if regime == "CHOPPY": return "HOLD_CHOPPY_MARKET", final_score
-        return "HOLD_OBSERVE_NEUTRAL_SCORE", final_score
+        # Determine the correct "HOLD" message
+        if base_score != final_score:
+            return "HOLD_REGIME_ADJUSTED", final_score
+        else:  # base_score == final_score, and it's between the thresholds
+            return "HOLD_OBSERVE_NEUTRAL_SCORE", final_score
 
     @staticmethod
     def _calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -290,8 +308,8 @@ class MultiIndicatorStrategy(TradingStrategy):
         return signals_details, total_score
 
     @staticmethod
-    def _determine_overall_signal_and_exits(current_price: float, current_atr: float, pre_approved_signal: str) -> \
-    Tuple[str, float | None, float | None]:
+    def _determine_overall_signal_and_exits(current_price: float, current_atr: float, pre_approved_signal: str) -> (
+            Tuple)[str, float | None, float | None, float | None]:
         """
         Calculates exit prices for an already approved signal.
         Now returns SL, TP1, and TP2.
