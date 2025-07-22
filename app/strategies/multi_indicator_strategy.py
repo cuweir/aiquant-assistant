@@ -59,8 +59,12 @@ class MultiIndicatorStrategy(TradingStrategy):
             )
 
         return {
-            "signals_details": signals_details, "total_score": final_score,
-            "current_price": current_price, "overall_signal": final_signal,
+            "signals_details": signals_details,
+            "total_score": final_score,
+            "current_price": current_price,
+            "overall_signal": final_signal,
+            "suggested_sl": suggested_sl,
+            "suggested_tp": suggested_tp
         }
 
     @staticmethod
