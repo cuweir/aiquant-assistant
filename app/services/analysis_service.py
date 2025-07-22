@@ -189,11 +189,15 @@ class AnalysisService:
                - **Price:** {price_str}
                - **Calculated Signal:** {result['overall_signal']} (Total Score: {result['total_score']})
         """
+        suggested_sl = result.get('suggested_sl')
+        suggested_tp1 = result.get('suggested_tp1')
+        suggested_tp2 = result.get('suggested_tp2')
 
-        if result['suggested_sl'] is not None and result['suggested_tp'] is not None:
-            prompt += f"""           - **Suggested Stop Loss (SL):** {format_price_dynamically(result['suggested_sl'])}
-                - **Suggested Take Profit (TP):** {format_price_dynamically(result['suggested_tp'])} (Implied Risk/Reward Ratio: 1:{settings.RISK_REWARD_RATIO})
-            """
+        if suggested_sl is not None and suggested_tp2 is not None:  # Check for the final TP
+            prompt += f"""           - **Suggested Stop Loss (SL):** {format_price_dynamically(suggested_sl)}
+                   - **Suggested Take Profit 1 (TP1 @ 1R):** {format_price_dynamically(suggested_tp1)}
+                   - **Suggested Take Profit 2 (TP2 @ {settings.RISK_REWARD_RATIO_TP2}R):** {format_price_dynamically(suggested_tp2)}
+        """
 
         prompt += f"""
             **2. Key Contributing Indicator Signals:**
@@ -208,7 +212,7 @@ class AnalysisService:
             You are a professional, data-driven crypto analyst. Your advice must be concise, actionable, and based *only* on the data provided.
     
             1.  **Assess the Signal:** Briefly evaluate the `Calculated Signal`. Is the score strong? Do the contributing indicators show clear alignment (confluence) or are there mixed signals (divergence)?
-            2.  **Validate Exit Levels:** Review the `Suggested Stop Loss (SL)` and `Take Profit (TP)`. Are they placed at logical levels, or should they be adjusted based on the recent price action shown in the market data? Provide your **final suggested SL and TP prices**.
+            2.  **Validate Exit Levels:** Review the `Suggested Stop Loss (SL)` and `Take Profit (TP1, TP2)`. Are they placed at logical levels? Provide your **final suggested SL and TP prices**.
             3.  **Provide Final Suggestion:** Based on everything, give a single, clear trading suggestion from this list:
                 **[Strong Buy / Buy / Hold / Sell / Strong Sell / Avoid]**
             4.  **Justify:** In 1-2 sentences, explain *why* you made that suggestion.
