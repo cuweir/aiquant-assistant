@@ -1,22 +1,26 @@
 import pandas as pd
 from typing import Dict, Any, List
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import select
 import asyncio
-from .data_fetcher import data_fetcher_instance
+from .data_fetcher import data_fetcher_instance  # Keep for potential other uses
 from ..core.config import settings
 from ..llm_providers import get_llm_strategy
 from ..strategies.multi_indicator_strategy import MultiIndicatorStrategy
 from ..db.session import SessionLocal
-from ..db.models import AnalysisResult, Symbol, Strategy
+from ..db.models import AnalysisResult, Symbol, Strategy, HistoricalOhlcv
 from ..utils.formatters import format_price_dynamically
 
 
 class AnalysisService:
     def __init__(self):
+        # Data fetcher is no longer the primary source for analysis data,
+        # but can be kept for other potential direct-to-exchange features.
         self.data_fetcher = data_fetcher_instance
         self.llm_strategy = get_llm_strategy(settings)
         self.trading_strategy = MultiIndicatorStrategy()
 
+    # ... [ _get_or_create_symbol and _get_or_create_strategy methods remain unchanged ] ...
     def _get_or_create_symbol(self, db: Session, symbol_name: str) -> Symbol:
         """Finds an existing symbol or creates a new one in the database."""
         symbol = db.query(Symbol).filter(Symbol.name == symbol_name).first()
@@ -43,61 +47,103 @@ class AnalysisService:
             db.refresh(strategy)
         return strategy
 
+    def _fetch_data_from_db(
+            self, db: Session, symbol_id: int, timeframe: str, limit: int
+    ) -> pd.DataFrame | None:
+        """
+        Fetches OHLCV data directly from the local historical database.
+        """
+        print(f"Fetching data from LOCAL DB for symbol_id={symbol_id}, timeframe={timeframe}, limit={limit}")
+
+        # Build the query to get the latest 'limit' candles
+        stmt = (
+            select(HistoricalOhlcv)
+            .where(HistoricalOhlcv.symbol_id == symbol_id, HistoricalOhlcv.timeframe == timeframe)
+            .order_by(HistoricalOhlcv.open_time.desc())
+            .limit(limit)
+        )
+
+        # Use pandas to execute the query and load data into a DataFrame
+        # The connection can be extracted from the session
+        df = pd.read_sql_query(stmt, db.bind)
+
+        if df.empty:
+            print(f"Warning: No data found in local DB for symbol_id={symbol_id}, timeframe={timeframe}")
+            return None
+
+        # --- Data Formatting (Crucial to match the old format) ---
+        df.rename(columns={'open_time': 'timestamp'}, inplace=True)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+        df.set_index('timestamp', inplace=True)
+
+        # Convert numeric types from Decimal to float for pandas_ta
+        cols_to_convert = ['open', 'high', 'low', 'close', 'volume']
+        for col in cols_to_convert:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # The data is fetched in descending order, so we reverse it to get chronological order.
+        df.sort_index(ascending=True, inplace=True)
+
+        return df
+
     async def generate_comprehensive_analysis(
             self,
             symbol_name: str,
-            signal_timeframe: str = settings.SIGNAL_TIMEFRAME,  # <-- Use config as default
-            trend_timeframe_short: str = settings.TREND_TIMEFRAME_SHORT,  # <-- Use config as default
-            trend_timeframe_long: str = settings.TREND_TIMEFRAME_LONG  # <-- Use config as default
+            signal_timeframe: str = settings.SIGNAL_TIMEFRAME,
+            trend_timeframe_short: str = settings.TREND_TIMEFRAME_SHORT,
+            trend_timeframe_long: str = settings.TREND_TIMEFRAME_LONG
     ) -> Dict[str, Any] | None:
         """
-        Orchestration method for MTFA.
-        Accepts optional timeframe overrides, otherwise uses defaults from settings.
+        Orchestration method for MTFA, now reading from the local database.
         """
-        limit_needed = 200
-
-        df_signal_task = self.data_fetcher.fetch_ohlcv(symbol_name, signal_timeframe, limit=limit_needed)
-        df_trend_short_task = self.data_fetcher.fetch_ohlcv(symbol_name, trend_timeframe_short, limit=limit_needed)
-        df_trend_long_task = self.data_fetcher.fetch_ohlcv(symbol_name, trend_timeframe_long, limit=limit_needed)
-
-        df_signal, df_trend_short, df_trend_long = await asyncio.gather(
-            df_signal_task, df_trend_short_task, df_trend_long_task
-        )
-
-        if any(df is None or df.empty for df in [df_signal, df_trend_short, df_trend_long]):
-            print(f"Could not fetch sufficient OHLCV data for all MTFA timeframes for {symbol_name}.")
-            return None
-
-        strategy_result = await self.trading_strategy.generate_signals(df_signal, df_trend_short, df_trend_long)
-        if not strategy_result:
-            print(f"Strategy failed to generate signals for {symbol_name}.")
-            return None
-
-        # Correctly define variables from strategy_result
-        final_signal = strategy_result['overall_signal']
-        original_score = strategy_result['total_score']
-        current_price = strategy_result['current_price']
-
-        price_str = format_price_dynamically(current_price)
-        print(
-            f"Analysis for {symbol_name} ({signal_timeframe}): Price={price_str}, Score={original_score:.1f}, Signal: {final_signal}")
-
-        ai_suggestion = "AI analysis not triggered due to neutral or filtered signal."
-        should_call_llm = final_signal in ["POTENTIAL_BUY", "POTENTIAL_SELL"]
-
-        if should_call_llm:
-            print(f"  Signal is valid. Querying LLM...")
-            prompt = self._build_llm_prompt(symbol_name, signal_timeframe, strategy_result, df_signal)
-            ai_suggestion = await self.llm_strategy.generate_analysis(prompt)
+        limit_needed = 200  # The number of candles needed for indicator calculation
 
         db: Session = SessionLocal()
         try:
+            symbol_record = self._get_or_create_symbol(db, symbol_name)
+            if not symbol_record:
+                print(f"Could not find or create symbol '{symbol_name}' in DB.")
+                return None
+
+            # ** REFACTORED DATA FETCHING **
+            # Fetch all dataframes from the local database in parallel.
+            df_signal = self._fetch_data_from_db(db, symbol_record.id, signal_timeframe, limit_needed)
+            df_trend_short = self._fetch_data_from_db(db, symbol_record.id, trend_timeframe_short, limit_needed)
+            df_trend_long = self._fetch_data_from_db(db, symbol_record.id, trend_timeframe_long, limit_needed)
+
+            if any(df is None or df.empty for df in [df_signal, df_trend_short, df_trend_long]):
+                print(f"Could not fetch sufficient OHLCV data from local DB for {symbol_name}.")
+                return None
+
+            # The rest of the logic remains the same as it expects DataFrames in a specific format
+            strategy_result = await self.trading_strategy.generate_signals(df_signal, df_trend_short, df_trend_long)
+            if not strategy_result:
+                print(f"Strategy failed to generate signals for {symbol_name}.")
+                return None
+
+            # ... [ The rest of the method (LLM call, DB saving) remains unchanged ] ...
+            final_signal = strategy_result['overall_signal']
+            original_score = strategy_result['total_score']
+            current_price = strategy_result['current_price']
+
+            price_str = format_price_dynamically(current_price)
+            print(
+                f"Analysis for {symbol_name} ({signal_timeframe}): Price={price_str}, Score={original_score:.1f}, Signal: {final_signal}")
+
+            ai_suggestion = "AI analysis not triggered due to neutral or filtered signal."
+            should_call_llm = final_signal in ["POTENTIAL_BUY", "POTENTIAL_SELL"]
+
+            if should_call_llm:
+                print(f"  Signal is valid. Querying LLM...")
+                prompt = self._build_llm_prompt(symbol_name, signal_timeframe, strategy_result, df_signal)
+                ai_suggestion = await self.llm_strategy.generate_analysis(prompt)
+
             strategy_config = {
                 "atr_sl_multiplier": settings.ATR_STOP_LOSS_MULTIPLIER,
                 "rr_ratio_tp1": settings.RISK_REWARD_RATIO_TP1,
                 "rr_ratio_tp2": settings.RISK_REWARD_RATIO_TP2
             }
-            symbol_record = self._get_or_create_symbol(db, symbol_name)
+            # symbol_record is already fetched
             strategy_record = self._get_or_create_strategy(db, "multi_indicator_v1.2_mtfa", strategy_config)
 
             db_current_price = float(strategy_result['current_price']) if pd.notna(
@@ -136,7 +182,6 @@ class AnalysisService:
             db.refresh(db_analysis_result)
             print(f"Analysis for {symbol_name} successfully saved to database.")
 
-            # Prepare dictionary to return to the API layer
             return {
                 "timestamp": db_analysis_result.timestamp,
                 "symbol": symbol_name,
@@ -156,7 +201,7 @@ class AnalysisService:
                 }
             }
         except Exception as e:
-            print(f"Database Error: Failed to save analysis for {symbol_name}. Error: {e}")
+            print(f"Database Error in generate_comprehensive_analysis: {e}")
             import traceback;
             traceback.print_exc()
             db.rollback()
@@ -164,6 +209,7 @@ class AnalysisService:
         finally:
             db.close()
 
+    # ... [ _build_llm_prompt, get_all_analyses_from_db, close_llm_resources remain unchanged ] ...
     def _build_llm_prompt(self, symbol: str, timeframe: str, result: Dict[str, Any], df: pd.DataFrame) -> str:
         """
         Builds a detailed and high-quality prompt for the LLM based on the strategy results.
@@ -189,7 +235,7 @@ class AnalysisService:
         # Build the main prompt string
         prompt = f"""
             Cryptocurrency Analysis Request for {symbol} ({timeframe}):
-    
+
             **1. Core Signal Data:**
                - **Price:** {price_str}
                - **Calculated Signal:** {result['overall_signal']} (Total Score: {result['total_score']})
@@ -211,25 +257,24 @@ class AnalysisService:
                ```
                {df.iloc[-5:].to_string(float_format=lambda x: format_price_dynamically(x))}
                ```
-    
+
             **AI Analyst Task:**
-    
+
             You are a professional, data-driven crypto analyst. Your advice must be concise, actionable, and based *only* on the data provided.
-    
+
             1.  **Assess the Signal:** Briefly evaluate the `Calculated Signal`. Is the score strong? Do the contributing indicators show clear alignment (confluence) or are there mixed signals (divergence)?
             2.  **Validate Exit Levels:** Review the `Suggested Stop Loss (SL)` and `Take Profit (TP1, TP2)`. Are they placed at logical levels? Provide your **final suggested SL and TP prices**.
             3.  **Provide Final Suggestion:** Based on everything, give a single, clear trading suggestion from this list:
                 **[Strong Buy / Buy / Hold / Sell / Strong Sell / Avoid]**
             4.  **Justify:** In 1-2 sentences, explain *why* you made that suggestion.
             5.  **Identify Key Factor:** Mention the single most important risk to watch for OR a key confirmation that would strengthen the signal.
-    
+
             **Format your response clearly using Markdown.**
         """
         return prompt.strip()
 
     def get_all_analyses_from_db(self, db: Session, skip: int = 0, limit: int = 20) -> List[AnalysisResult]:
         """Fetches a paginated list of analysis results from the database."""
-        # 2. Use joinedload directly after importing it.
         return db.query(AnalysisResult).options(
             joinedload(AnalysisResult.symbol),
             joinedload(AnalysisResult.strategy)
