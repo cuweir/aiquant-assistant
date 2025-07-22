@@ -34,6 +34,7 @@ class AIAnalysisOutput(BaseModel):
     price: float
     ai_analysis: str
     stop_loss: Optional[float] = None
+    take_profit_1: Optional[float] = None
     take_profit: Optional[float] = None
     details: Optional[AnalysisDetails] = None
     # prompt: Optional[str] = None # Optionally include for debugging

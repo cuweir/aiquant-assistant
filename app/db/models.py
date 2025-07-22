@@ -40,9 +40,11 @@ class AnalysisResult(Base):
     composite_score = Column(Float)
     overall_signal = Column(String)
     suggested_sl = Column(Numeric(18, 8))
+    suggested_tp1 = Column(Numeric(18, 8))
     suggested_tp = Column(Numeric(18, 8))
     llm_queried = Column(Boolean, nullable=False)
     llm_analysis = Column(Text)
+    # Using JSONB to store detailed indicator analysis
     indicator_details = Column(JSONB)
 
     symbol = relationship("Symbol", back_populates="results")

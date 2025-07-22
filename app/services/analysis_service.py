@@ -118,7 +118,8 @@ class AnalysisService:
                 composite_score=db_composite_score,
                 overall_signal=final_signal,
                 suggested_sl=db_suggested_sl,
-                suggested_tp=db_suggested_tp,
+                suggested_tp1=strategy_result['suggested_tp1'],
+                suggested_tp=strategy_result['suggested_tp2'],
                 llm_queried=should_call_llm,
                 llm_analysis=ai_suggestion,
                 indicator_details=strategy_result['signals_details']
@@ -136,6 +137,7 @@ class AnalysisService:
                 "local_signal": final_signal,
                 "price": float(current_price),
                 "stop_loss": float(strategy_result['suggested_sl']) if strategy_result['suggested_sl'] else None,
+                "take_profit_1": float(db_analysis_result.suggested_tp1) if db_analysis_result.suggested_tp1 else None,
                 "take_profit": float(strategy_result['suggested_tp']) if strategy_result['suggested_tp'] else None,
                 "ai_analysis": ai_suggestion,
                 "rsi": next((d['value'] for d in strategy_result['signals_details'] if d['indicator'] == 'RSI'),

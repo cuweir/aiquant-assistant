@@ -52,9 +52,9 @@ class MultiIndicatorStrategy(TradingStrategy):
 
         if current_price is None or pd.isna(current_price): return {}
 
-        suggested_sl, suggested_tp = None, None
+        suggested_sl, suggested_tp1, suggested_tp2 = None, None, None
         if final_signal in ["POTENTIAL_BUY", "POTENTIAL_SELL"]:
-            _, suggested_sl, suggested_tp = self._determine_overall_signal_and_exits(
+            _, suggested_sl, suggested_tp1, suggested_tp2 = self._determine_overall_signal_and_exits(
                 current_price, current_atr, pre_approved_signal=final_signal
             )
 
@@ -64,7 +64,8 @@ class MultiIndicatorStrategy(TradingStrategy):
             "current_price": current_price,
             "overall_signal": final_signal,
             "suggested_sl": suggested_sl,
-            "suggested_tp": suggested_tp
+            "suggested_tp1": suggested_tp1,  # <-- ADDED
+            "suggested_tp2": suggested_tp2
         }
 
     @staticmethod
@@ -291,12 +292,24 @@ class MultiIndicatorStrategy(TradingStrategy):
     @staticmethod
     def _determine_overall_signal_and_exits(current_price: float, current_atr: float, pre_approved_signal: str) -> \
     Tuple[str, float | None, float | None]:
-        suggested_sl, suggested_tp = None, None
+        """
+        Calculates exit prices for an already approved signal.
+        Now returns SL, TP1, and TP2.
+        """
+        suggested_sl, suggested_tp1, suggested_tp2 = None, None, None
+
         if pd.notna(current_atr) and current_atr > 0:
-            sl_dist = settings.ATR_STOP_LOSS_MULTIPLIER * current_atr
-            tp_dist = sl_dist * settings.RISK_REWARD_RATIO
+            stop_loss_distance = settings.ATR_STOP_LOSS_MULTIPLIER * current_atr
+
+            take_profit_1_distance = stop_loss_distance * settings.RISK_REWARD_RATIO_TP1
+            take_profit_2_distance = stop_loss_distance * settings.RISK_REWARD_RATIO_TP2
+
             if pre_approved_signal == "POTENTIAL_BUY":
-                suggested_sl, suggested_tp = current_price - sl_dist, current_price + tp_dist
+                suggested_sl = current_price - stop_loss_distance
+                suggested_tp1 = current_price + take_profit_1_distance
+                suggested_tp2 = current_price + take_profit_2_distance
             elif pre_approved_signal == "POTENTIAL_SELL":
-                suggested_sl, suggested_tp = current_price + sl_dist, current_price - tp_dist
-        return pre_approved_signal, suggested_sl, suggested_tp
+                suggested_sl = current_price + stop_loss_distance
+                suggested_tp1 = current_price - take_profit_1_distance
+                suggested_tp2 = current_price - take_profit_2_distance
+        return pre_approved_signal, suggested_sl, suggested_tp1, suggested_tp2
