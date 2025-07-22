@@ -100,10 +100,10 @@ class AnalysisService:
             symbol_record = self._get_or_create_symbol(db, symbol_name)
             strategy_record = self._get_or_create_strategy(db, "multi_indicator_v1.2_mtfa", strategy_config)
 
-            db_current_price = float(current_price) if pd.notna(current_price) else None
-            db_composite_score = float(original_score) if pd.notna(original_score) else None
-
-            # Use .get() for safety and then cast
+            db_current_price = float(strategy_result['current_price']) if pd.notna(
+                strategy_result['current_price']) else None
+            db_composite_score = float(strategy_result['total_score']) if pd.notna(
+                strategy_result['total_score']) else None
             db_suggested_sl = float(strategy_result.get('suggested_sl')) if pd.notna(
                 strategy_result.get('suggested_sl')) else None
             db_suggested_tp1 = float(strategy_result.get('suggested_tp1')) if pd.notna(
@@ -124,8 +124,8 @@ class AnalysisService:
                 composite_score=db_composite_score,
                 overall_signal=final_signal,
                 suggested_sl=db_suggested_sl,
-                suggested_tp1=db_suggested_tp1,  # Use correct column name
-                suggested_tp=db_suggested_tp2,  # Use correct column name
+                suggested_tp1=db_suggested_tp1,
+                suggested_tp=db_suggested_tp2,
                 llm_queried=should_call_llm,
                 llm_analysis=ai_suggestion,
                 indicator_details=strategy_result.get('signals_details')
