@@ -15,3 +15,4 @@ SQLAlchemy~=2.0.41
 alembic~=1.16.4
 psycopg2-binary
 APScheduler~=3.11.0
+backtrader~=1.9.78.123
