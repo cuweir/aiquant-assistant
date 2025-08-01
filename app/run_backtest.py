@@ -23,14 +23,13 @@ def run_parameterized_backtest(config: Dict[str, Any]) -> Dict[str, Any]:
     end_date = datetime.datetime.fromisoformat(config["end_date"])
     print("Fetching data for backtest...")
     df_signal = fetch_df_from_postgres(config["symbol"], settings.SIGNAL_TIMEFRAME, start_date, end_date)
-    df_trend_short = fetch_df_from_postgres(config["symbol"], settings.TREND_TIMEFRAME_SHORT, start_date, end_date)
-    df_trend_long = fetch_df_from_postgres(config["symbol"], settings.TREND_TIMEFRAME_LONG, start_date, end_date)
+    df_regime = fetch_df_from_postgres(config["symbol"], settings.TREND_TIMEFRAME_SHORT, start_date, end_date)
+
     data_signal = PandasData(dataname=df_signal)
-    data_trend_short = PandasData(dataname=df_trend_short)
-    data_trend_long = PandasData(dataname=df_trend_long)
+    data_regime = PandasData(dataname=df_regime)
+
     cerebro.adddata(data_signal)
-    cerebro.adddata(data_trend_short)
-    cerebro.adddata(data_trend_long)
+    cerebro.adddata(data_regime)  # Add the regime data feed
     cerebro.broker.setcash(config.get("cash", 10000.0))
     cerebro.broker.setcommission(commission=config.get("commission", 0.001))
     sizer_config = config.get("sizer", {})
@@ -111,32 +110,32 @@ if __name__ == '__main__':
     # print(json.dumps(results_summary, indent=4))
     test_config = {
         "symbol": "BTC/USDT",
-        "start_date": "2024-01-01",
-        "end_date": "2025-07-23",
+        "start_date": "2024-01-01",  # Let's test on a longer, more varied period
+        "end_date": "2025-07-24",
         "cash": 10000.0,
         "commission": 0.001,
         "sizer": {"type": "Percent", "percents": 90},
         "strategy_params": {
-            "ma_short_period": 20,
-            "ma_long_period": 50,
-            "adx_period": 14,
-            "adx_threshold": 25,
+            # New parameters for the Confluence Strategy
+            "regime_ma_period": 200,  # Using 200-period MA on the 1h chart for regime
+            "score_ma_short_period": 20,
+            "score_ma_long_period": 50,
+            "score_rsi_period": 14,
+            "score_rsi_oversold": 40,
+            "buy_score_threshold": 3,  # A score of 3 or more is needed to buy
             "atr_period": 14,
-            "atr_sl_multiplier": 2.0, # Keep the stop loss
-            # "risk_reward_ratio_tp" is removed
+            "atr_sl_multiplier": 2.5,  # A slightly wider stop loss
         }
     }
 
     try:
-        print("--- Starting Manual Baseline (SMA Crossover) Backtest ---")
+        print("--- Starting Manual 'Signal Confluence' Backtest ---")
         results = run_parameterized_backtest(test_config)
         results_summary = {k: v for k, v in results.items() if k != 'trades'}
-        print("\n--- MANUAL BASELINE RESULT ---")
+        print("\n--- MANUAL CONFLUENCE RESULT ---")
         print(json.dumps(results_summary, indent=4))
-        print("----------------------------")
+        print("---------------------------------")
     except Exception as e:
-        print(f"\n--- MANUAL BACKTEST FAILED ---")
         import traceback
 
         traceback.print_exc()
-        print("----------------------------")
