@@ -7,46 +7,61 @@ class MtfaStrategyBt(bt.Strategy):
     The goal is to only enter when the short-term trend has strong upward momentum.
     """
     params = (
-        # --- Regime Filter Parameters ---
+        # --- Base Parameters ---
         ('regime_ma_period', 200),
-        # --- Confluence Scoring Parameters ---
-        ('score_ma_short_period', 20),
-        ('score_ma_long_period', 50),
-        ('score_macd_fast', 12),
-        ('score_macd_slow', 26),
-        ('score_macd_signal', 9),
-        ('score_rsi_period', 14),
-        ('score_rsi_oversold', 40),
-        # --- Entry Threshold ---
         ('buy_score_threshold', 3),
-        # --- Risk Management Parameters ---
         ('atr_period', 14),
-        ('atr_sl_multiplier', 2.5),
-        # --- Slope Filter Parameters ---
         ('slope_lookback_period', 5),
         ('slope_min_threshold', 0.0),
-        # --- [NEW] Add all other parameters from the optimizer grid here ---
-        # Even if they are not used in this specific simple strategy version,
-        # defining them prevents "unexpected keyword argument" errors.
-        ('adx_period', 14),
-        ('adx_threshold', 25),
-        ('risk_reward_ratio_tp', 1.5)  # From older strategy versions
+
+        # --- [NEW] Parameters now define ranges for different volatility states ---
+        # Low Volatility Parameters
+        ('low_vol_ma_short', 25),
+        ('low_vol_ma_long', 60),
+        ('low_vol_adx_threshold', 28),
+        ('low_vol_atr_sl_multiplier', 2.0),
+
+        # High Volatility Parameters
+        ('high_vol_ma_short', 15),
+        ('high_vol_ma_long', 40),
+        ('high_vol_adx_threshold', 22),
+        ('high_vol_atr_sl_multiplier', 3.0),
+
+        # Volatility Regime Parameters
+        ('vol_atr_period', 14),  # ATR for volatility calculation
+        ('vol_atr_ma_period', 100),  # Moving average of ATR
     )
 
     def __init__(self):
-        # ... (Data Aliases and Indicator definitions remain mostly the same) ...
+        # --- Data & Aliases ---
         self.d_signal = self.datas[0]
         self.d_regime = self.datas[1]
         self.dataclose = self.d_signal.close
-        self.regime_ma = bt.indicators.SimpleMovingAverage(self.d_regime.close, period=self.p.regime_ma_period)
-        self.score_ma_short = bt.indicators.SimpleMovingAverage(self.d_signal.close, period=self.p.score_ma_short_period)
-        self.score_ma_long = bt.indicators.SimpleMovingAverage(self.d_signal.close, period=self.p.score_ma_long_period)
-        self.rsi = bt.indicators.RSI(self.d_signal.close, period=self.p.score_rsi_period)
-        self.macd = bt.indicators.MACD(self.d_signal.close, period_me1=self.p.score_macd_fast, period_me2=self.p.score_macd_slow, period_signal=self.p.score_macd_signal)
-        self.macd_crossover = bt.indicators.CrossOver(self.macd.macd, self.macd.signal)
-        self.atr = bt.indicators.AverageTrueRange(self.d_signal, period=self.p.atr_period)
 
-        # --- State Variables ---
+        # --- [FIX] All indicators are now defined once and for all here ---
+
+        # Regime Filter
+        self.regime_ma = bt.indicators.SimpleMovingAverage(self.d_regime, period=self.p.regime_ma_period)
+
+        # Volatility Regime Indicators
+        self.vol_atr = bt.indicators.AverageTrueRange(self.d_signal, period=self.p.vol_atr_period)
+        self.vol_atr_ma = bt.indicators.SimpleMovingAverage(self.vol_atr, period=self.p.vol_atr_ma_period)
+
+        # --- Indicators for the LOW volatility parameter set ---
+        self.low_vol_ma_short = bt.indicators.SimpleMovingAverage(self.d_signal, period=self.p.low_vol_ma_short)
+        self.low_vol_ma_long = bt.indicators.SimpleMovingAverage(self.d_signal, period=self.p.low_vol_ma_long)
+        self.low_vol_adx = bt.indicators.AverageDirectionalMovementIndex(self.d_signal, period=14)
+
+        # --- Indicators for the HIGH volatility parameter set ---
+        self.high_vol_ma_short = bt.indicators.SimpleMovingAverage(self.d_signal, period=self.p.high_vol_ma_short)
+        self.high_vol_ma_long = bt.indicators.SimpleMovingAverage(self.d_signal, period=self.p.high_vol_ma_long)
+        self.high_vol_adx = bt.indicators.AverageDirectionalMovementIndex(self.d_signal, period=14)
+
+        # --- Common Indicators (their periods don't change) ---
+        self.rsi = bt.indicators.RSI(self.d_signal, period=14)
+        self.macd = bt.indicators.MACD(self.d_signal, period_me1=12, period_me2=26, period_signal=9)
+        self.macd_crossover = bt.indicators.CrossOver(self.macd.macd, self.macd.signal)
+
         self.order = None
         self.stop_loss_price = None
 
@@ -73,36 +88,51 @@ class MtfaStrategyBt(bt.Strategy):
     def next(self):
         if self.order: return
 
+        # === [STEP 1] Determine Volatility Regime ===
+        is_high_volatility = self.vol_atr[0] > self.vol_atr_ma[0]
+
+        # === [STEP 2] Select the correct, pre-calculated indicator set ===
+        if is_high_volatility:
+            ma_short = self.high_vol_ma_short
+            ma_long = self.high_vol_ma_long
+            adx = self.high_vol_adx
+            adx_thresh = self.p.high_vol_adx_threshold
+            atr_sl_mult = self.p.high_vol_atr_sl_multiplier
+        else:  # Low Volatility
+            ma_short = self.low_vol_ma_short
+            ma_long = self.low_vol_ma_long
+            adx = self.low_vol_adx
+            adx_thresh = self.p.low_vol_adx_threshold
+            atr_sl_mult = self.p.low_vol_atr_sl_multiplier
+
+        # === [STEP 3] Execute Strategy Logic (using the selected indicators) ===
         is_bull_regime = self.d_regime.close[0] > self.regime_ma[0]
 
         if not self.position:
             if is_bull_regime:
                 buy_score = 0
-                if self.score_ma_short > self.score_ma_long: buy_score += 1
-                if self.macd_crossover > 0 and self.macd_crossover[-1] != self.macd_crossover[0]: buy_score += 2
-                if self.rsi[-1] < self.p.score_rsi_oversold and self.rsi[0] > self.p.score_rsi_oversold: buy_score += 1
+                if ma_short[0] > ma_long[0]: buy_score += 1
+                if self.macd_crossover[0] > 0: buy_score += 2
+                if self.rsi[-1] < 40 and self.rsi[0] > 40: buy_score += 1
 
                 if buy_score >= self.p.buy_score_threshold:
-                    # [NEW] FINAL CONFIRMATION: Check the slope of the short-term MA
-                    # Get the last N values of the short MA
-                    y_values = self.score_ma_short.get(size=self.p.slope_lookback_period)
-                    # Use a simple linear regression to find the slope
-                    # A positive slope means the MA is trending upwards
-                    x_values = np.arange(len(y_values))
-                    slope = np.polyfit(x_values, y_values, 1)[0]
+                    if adx.adx[0] > adx_thresh:
+                        y_values = ma_short.get(size=self.p.slope_lookback_period)
+                        x_values = np.arange(len(y_values))
+                        if len(y_values) < self.p.slope_lookback_period: return
+                        slope = np.polyfit(x_values, y_values, 1)[0]
 
-                    if slope > self.p.slope_min_threshold:
-                        risk_per_share = self.atr[0] * self.p.atr_sl_multiplier
-                        self.stop_loss_price = self.dataclose[0] - risk_per_share
-
-                        self.log(
-                            f'BUY SIGNAL (Score={buy_score}, Slope={slope:.2f}), Price={self.dataclose[0]:.2f}, SL={self.stop_loss_price:.2f}')
-                        self.order = self.buy()
+                        if slope > self.p.slope_min_threshold:
+                            risk = self.vol_atr[0] * atr_sl_mult
+                            self.stop_loss_price = self.dataclose[0] - risk
+                            self.log(
+                                f'BUY SIGNAL ({"High" if is_high_volatility else "Low"} Vol), Score={buy_score}, Slope={slope:.2f}')
+                            self.order = self.buy()
         else:  # Exiting a position
             if self.position.size > 0:
                 if self.dataclose[0] < self.stop_loss_price:
-                    self.log(f'STOP LOSS HIT, Price={self.dataclose[0]:.2f}')
+                    self.log('STOP LOSS HIT')
                     self.order = self.close()
-                elif self.score_ma_short < self.score_ma_long:
-                    self.log(f'TREND WEAKENED (Death Cross), TAKE PROFIT, Price={self.dataclose[0]:.2f}')
+                elif ma_short[0] < ma_long[0]:
+                    self.log('TREND WEAKENED (Death Cross)')
                     self.order = self.close()

@@ -117,14 +117,14 @@ if __name__ == '__main__':
         "sizer": {"type": "Percent", "percents": 90},
         "strategy_params": {
             # New parameters for the Confluence Strategy
-            "regime_ma_period": 200,  # Using 200-period MA on the 1h chart for regime
-            "score_ma_short_period": 20,
-            "score_ma_long_period": 50,
-            "score_rsi_period": 14,
-            "score_rsi_oversold": 40,
-            "buy_score_threshold": 3,  # A score of 3 or more is needed to buy
-            "atr_period": 14,
-            "atr_sl_multiplier": 2.5,  # A slightly wider stop loss
+            # "regime_ma_period": 200,  # Using 200-period MA on the 1h chart for regime
+            # "score_ma_short_period": 20,
+            # "score_ma_long_period": 50,
+            # "score_rsi_period": 14,
+            # "score_rsi_oversold": 40,
+            # "buy_score_threshold": 3,  # A score of 3 or more is needed to buy
+            # "atr_period": 14,
+            # "atr_sl_multiplier": 2.5,  # A slightly wider stop loss
         }
     }
 
