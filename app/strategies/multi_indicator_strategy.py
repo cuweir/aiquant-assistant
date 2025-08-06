@@ -1,333 +1,152 @@
+# app/strategies/multi_indicator_strategy.py
+
 import pandas as pd
 import pandas_ta as ta
-from typing import Dict, Any, List, Tuple
+import numpy as np
+from typing import Dict, Any
 
-from .base_strategy import TradingStrategy
-from ..core.config import settings
-from ..utils.formatters import format_price_dynamically
+from app.strategies.base_strategy import TradingStrategy
 
 
 class MultiIndicatorStrategy(TradingStrategy):
     """
-    A strategy that combines multiple technical indicators (RSI, MACD, MA, BBands, Volume)
-    to generate a composite score and trading signals.
+    This is the complete and correct real-time analysis version of our successful
+    V7 Volatility Adaptive backtesting strategy. It includes both Stop Loss
+    and a dynamic Take Profit signal logic.
     """
 
-    async def generate_signals(
-            self,
-            df_signal: pd.DataFrame,
-            df_trend_short: pd.DataFrame,
-            df_trend_long: pd.DataFrame
-    ) -> Dict[str, Any]:
+    def __init__(self, params: Dict[str, Any]):
+        """
+        Initializes the strategy with a specific parameter set.
+        """
+        if not params:
+            raise ValueError("Strategy parameters cannot be None or empty.")
+        self.p = params
+        # Set default values for all possible parameters to ensure robustness
+        self.p.setdefault('regime_ma_period', 200)
+        self.p.setdefault('buy_score_threshold', 3)
+        self.p.setdefault('slope_lookback_period', 5)
+        self.p.setdefault('slope_min_threshold', 0.0)
+        self.p.setdefault('vol_atr_period', 14)
+        self.p.setdefault('vol_atr_ma_period', 100)
+        self.p.setdefault('low_vol_ma_short', 25)
+        self.p.setdefault('low_vol_ma_long', 80)
+        self.p.setdefault('low_vol_adx_threshold', 30)
+        self.p.setdefault('low_vol_atr_sl_multiplier', 2.0)
+        self.p.setdefault('high_vol_ma_short', 15)
+        self.p.setdefault('high_vol_ma_long', 40)
+        self.p.setdefault('high_vol_adx_threshold', 30)
+        self.p.setdefault('high_vol_atr_sl_multiplier', 2.5)
+        self.p.setdefault('rsi_period', 14)
+        self.p.setdefault('rsi_oversold', 40)
+        self.p.setdefault('macd_fast', 12)
+        self.p.setdefault('macd_slow', 26)
+        self.p.setdefault('macd_signal', 9)
+        self.p.setdefault('adx_period', 14)
 
-        # 1. Determine multi-level trends
-        trend_long, trend_details_long = self._get_trend(df_trend_long, settings.TREND_FILTER_PERIOD_LONG)
-        trend_short, trend_details_short = self._get_trend(df_trend_short, settings.TREND_FILTER_PERIOD_SHORT)
+    def _calculate_indicators(self, df_signal: pd.DataFrame, df_regime: pd.DataFrame) -> Dict[str, pd.Series]:
+        """
+        Calculates all necessary indicators using pandas_ta.
+        """
+        indicators = {}
 
-        # 2. Determine the current market regime
-        market_regime = self._determine_market_regime(trend_long, trend_short)
+        # Regime Filter
+        indicators['regime_ma'] = df_regime['close'].ta.sma(length=self.p['regime_ma_period'])
 
-        # 3. Calculate base indicators and score on the signal DataFrame
-        df_with_indicators = self._calculate_indicators(df_signal.copy())
-        df_clean = df_with_indicators.dropna()
+        # Volatility Regime
+        vol_atr = df_signal.ta.atr(length=self.p['vol_atr_period'], append=True)
+        indicators['vol_atr'] = vol_atr
+        indicators['vol_atr_ma'] = vol_atr.ta.sma(length=self.p['vol_atr_ma_period'])
 
-        if len(df_clean) < 2: return {}
+        # Low Volatility Indicators
+        indicators['low_vol_ma_short'] = df_signal['close'].ta.sma(length=self.p['low_vol_ma_short'])
+        indicators['low_vol_ma_long'] = df_signal['close'].ta.sma(length=self.p['low_vol_ma_long'])
+        adx_low = df_signal.ta.adx(length=self.p['adx_period'])
+        if adx_low is not None and not adx_low.empty:
+            indicators['low_vol_adx'] = adx_low[f'ADX_{self.p["adx_period"]}']
 
-        signals_details, base_score = self._get_indicator_signals_and_score(df_clean)
+        # High Volatility Indicators
+        indicators['high_vol_ma_short'] = df_signal['close'].ta.sma(length=self.p['high_vol_ma_short'])
+        indicators['high_vol_ma_long'] = df_signal['close'].ta.sma(length=self.p['high_vol_ma_long'])
+        adx_high = df_signal.ta.adx(length=self.p['adx_period'])
+        if adx_high is not None and not adx_high.empty:
+            indicators['high_vol_adx'] = adx_high[f'ADX_{self.p["adx_period"]}']
 
-        signals_details.append({"indicator": f"Trend_Filter_{settings.TREND_TIMEFRAME_LONG}", "signal": trend_long,
-                                "value": trend_details_long, "score_change": 0})
-        signals_details.append({"indicator": f"Trend_Filter_{settings.TREND_TIMEFRAME_SHORT}", "signal": trend_short,
-                                "value": trend_details_short, "score_change": 0})
-        signals_details.append({"indicator": "Market_Regime", "signal": market_regime, "value": "", "score_change": 0})
+        # Common Indicators
+        indicators['rsi'] = df_signal.ta.rsi(length=self.p['rsi_period'])
+        macd_df = df_signal.ta.macd(fast=self.p['macd_fast'], slow=self.p['macd_slow'], signal=self.p['macd_signal'])
+        if macd_df is not None and not macd_df.empty:
+            indicators['macd'] = macd_df[f'MACD_{self.p["macd_fast"]}_{self.p["macd_slow"]}_{self.p["macd_signal"]}']
+            indicators['macd_signal'] = macd_df[
+                f'MACDs_{self.p["macd_fast"]}_{self.p["macd_slow"]}_{self.p["macd_signal"]}']
 
-        # 4. Apply regime-specific rules to adjust score and determine final signal
-        final_signal, final_score = self._apply_regime_rules(base_score, market_regime, signals_details)
+        return indicators
 
-        latest_candle = df_clean.iloc[-1]
-        current_price = latest_candle.get('close')
-        atr_key = f'ATRr_{settings.ATR_PERIOD}'
-        current_atr = latest_candle.get(atr_key)
+    async def generate_signals(self, df_signal: pd.DataFrame, df_regime: pd.DataFrame) -> Dict[str, Any] | None:
+        """
+        Main analysis function, mirroring the V7 backtest logic completely.
+        """
+        if len(df_signal) < self.p['low_vol_ma_long'] or len(df_regime) < self.p['regime_ma_period']:
+            return {"overall_signal": "INSUFFICIENT_DATA", "total_score": 0,
+                    "current_price": df_signal['close'].iloc[-1]}
 
-        if current_price is None or pd.isna(current_price): return {}
+        indicators = self._calculate_indicators(df_signal, df_regime)
 
-        suggested_sl, suggested_tp1, suggested_tp2 = None, None, None
-        if final_signal in ["POTENTIAL_BUY", "POTENTIAL_SELL"]:
-            _, suggested_sl, suggested_tp1, suggested_tp2 = self._determine_overall_signal_and_exits(
-                current_price, current_atr, pre_approved_signal=final_signal
+        # Get latest and previous values for signal evaluation
+        latest = {name: series.iloc[-1] for name, series in indicators.items()}
+        previous = {name: series.iloc[-2] for name, series in indicators.items()}
+        latest_close = df_signal['close'].iloc[-1]
+
+        # --- Strategy Logic ---
+
+        # 1. Regime Filter
+        is_bull_regime = df_regime['close'].iloc[-1] > latest.get('regime_ma', float('inf'))
+        if not is_bull_regime:
+            return {"overall_signal": "REGIME_FILTER_BEARISH", "total_score": 0, "current_price": latest_close}
+
+        # 2. Volatility Adaptive Parameters
+        is_high_vol = latest.get('vol_atr', 0) > latest.get('vol_atr_ma', 0)
+        if is_high_vol:
+            ma_short, ma_long, adx_val, adx_thresh, atr_sl_mult, ma_short_series = (
+                latest.get('high_vol_ma_short'), latest.get('high_vol_ma_long'), latest.get('high_vol_adx'),
+                self.p['high_vol_adx_threshold'], self.p['high_vol_atr_sl_multiplier'], indicators['high_vol_ma_short']
+            )
+        else:
+            ma_short, ma_long, adx_val, adx_thresh, atr_sl_mult, ma_short_series = (
+                latest.get('low_vol_ma_short'), latest.get('low_vol_ma_long'), latest.get('low_vol_adx'),
+                self.p['low_vol_adx_threshold'], self.p['low_vol_atr_sl_multiplier'], indicators['low_vol_ma_short']
             )
 
+        # 3. Confluence Scoring
+        buy_score = 0
+        if ma_short > ma_long: buy_score += 1
+        if previous.get('macd') < previous.get('macd_signal') and latest.get('macd') > latest.get('macd_signal'):
+            buy_score += 2
+        if previous.get('rsi') < self.p['rsi_oversold'] and latest.get('rsi') > self.p['rsi_oversold']:
+            buy_score += 1
+
+        final_signal = "NEUTRAL"
+        if buy_score >= self.p['buy_score_threshold']:
+            if adx_val > adx_thresh:
+                # Slope Confirmation
+                y_values = ma_short_series.iloc[-self.p['slope_lookback_period']:].values
+                if len(y_values) == self.p['slope_lookback_period']:
+                    x_values = np.arange(len(y_values))
+                    slope = np.polyfit(x_values, y_values, 1)[0]
+                    if slope > self.p['slope_min_threshold']:
+                        final_signal = "POTENTIAL_BUY"
+
+        # 4. [FIX] Calculate Exits and provide complete information
+        suggested_sl = None
+        take_profit_condition = "Trend reversal (short MA crosses below long MA)"  # This is our dynamic TP
+
+        if final_signal == "POTENTIAL_BUY":
+            suggested_sl = latest_close - (latest.get('vol_atr', 0) * atr_sl_mult)
+
         return {
-            "signals_details": signals_details,
-            "total_score": final_score,  # This is the final, regime-adjusted score.
-            "current_price": current_price,
             "overall_signal": final_signal,
+            "total_score": buy_score,
+            "current_price": latest_close,
             "suggested_sl": suggested_sl,
-            "suggested_tp1": suggested_tp1,
-            "suggested_tp2": suggested_tp2,
+            "take_profit_condition": take_profit_condition
         }
-
-    @staticmethod
-    def _get_trend(df_trend: pd.DataFrame, period: int) -> Tuple[str, str]:
-        if df_trend is None or df_trend.empty: return "NEUTRAL", "Trend data unavailable"
-        trend_ema_key = f"EMA_{period}"
-        df_trend[trend_ema_key] = df_trend.ta.ema(length=period)
-        df_trend_clean = df_trend.dropna(subset=['close', trend_ema_key])
-        if df_trend_clean.empty: return "NEUTRAL", "Not enough trend data for EMA"
-        latest = df_trend_clean.iloc[-1]
-        price, trend_ema = latest.get('close'), latest.get(trend_ema_key)
-        if pd.isna(price) or pd.isna(trend_ema): return "NEUTRAL", "Could not calculate trend EMA"
-        details = f"Price:{format_price_dynamically(price)} vs EMA({period}):{format_price_dynamically(trend_ema)}"
-        if price > trend_ema:
-            return "UPTREND", details
-        elif price < trend_ema:
-            return "DOWNTREND", details
-        else:
-            return "SIDEWAYS", details
-
-    @staticmethod
-    def _determine_market_regime(trend_long: str, trend_short: str) -> str:
-        if trend_long == "UPTREND" and trend_short == "UPTREND": return "STRONG_BULL"
-        if trend_long == "DOWNTREND" and trend_short == "DOWNTREND": return "STRONG_BEAR"
-        if trend_long == "UPTREND" and trend_short in ["DOWNTREND", "SIDEWAYS"]: return "BULLISH_PULLBACK"
-        if trend_long == "DOWNTREND" and trend_short in ["UPTREND", "SIDEWAYS"]: return "BEARISH_RALLY"
-        return "CHOPPY"
-
-    @staticmethod
-    def _apply_regime_rules(base_score: float, regime: str, details: List[Dict]) -> Tuple[str, float]:
-        """
-        Applies regime-based adjustments to the base score to produce a final score and signal.
-        This is the clean, final, and correct implementation.
-        """
-        final_score = base_score
-
-        # --- Score Adjustment Logic ---
-        if regime == "STRONG_BULL":
-            if base_score > 0:
-                final_score += settings.REGIME_STRONG_TREND_BONUS
-            else:
-                final_score = 0  # Filter out counter-trend signals
-
-        elif regime == "STRONG_BEAR":
-            if base_score < 0:
-                final_score -= settings.REGIME_STRONG_TREND_BONUS
-            else:
-                final_score = 0  # Filter out counter-trend signals
-
-        elif regime == "BULLISH_PULLBACK":
-            if base_score < 0: final_score = 0  # Filter out signals that align with the short-term pullback
-
-            # Add bonus for reversal signals
-            rsi_detail = next((d for d in details if d['indicator'] == 'RSI'), None)
-            macd_detail = next((d for d in details if d['indicator'] == 'MACD'), None)
-            if rsi_detail and "OVERSOLD" in rsi_detail['signal']:
-                final_score += settings.REGIME_BULLISH_PULLBACK_RSI_BONUS
-            if macd_detail and "GOLDEN_CROSS" in macd_detail['signal']:
-                final_score += settings.REGIME_BULLISH_PULLBACK_MACD_BONUS
-
-        elif regime == "BEARISH_RALLY":
-            if base_score > 0: final_score = 0  # Filter out signals that align with the short-term rally
-
-            # Add bonus (negative) for reversal signals
-            rsi_detail = next((d for d in details if d['indicator'] == 'RSI'), None)
-            macd_detail = next((d for d in details if d['indicator'] == 'MACD'), None)
-            if rsi_detail and "OVERBOUGHT" in rsi_detail['signal']:
-                final_score -= settings.REGIME_BULLISH_PULLBACK_RSI_BONUS
-            if macd_detail and "DEATH_CROSS" in macd_detail['signal']:
-                final_score -= settings.REGIME_BULLISH_PULLBACK_MACD_BONUS
-
-        elif regime == "CHOPPY":
-            final_score = 0  # Filter out all signals in choppy markets
-
-        # --- Final Decision Logic ---
-        if final_score >= settings.BUY_SCORE_THRESHOLD:
-            return "POTENTIAL_BUY", final_score
-        if final_score <= settings.SELL_SCORE_THRESHOLD:
-            return "POTENTIAL_SELL", final_score
-
-        # Determine the correct "HOLD" message
-        if base_score != final_score:
-            return "HOLD_REGIME_ADJUSTED", final_score
-        else:  # base_score == final_score, and it's between the thresholds
-            return "HOLD_OBSERVE_NEUTRAL_SCORE", final_score
-
-    @staticmethod
-    def _calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty: return pd.DataFrame()
-        df.ta.rsi(length=settings.RSI_PERIOD, append=True)
-        macd = df.ta.macd(fast=settings.MACD_FAST_PERIOD, slow=settings.MACD_SLOW_PERIOD,
-                          signal=settings.MACD_SIGNAL_PERIOD)
-        if macd is not None and not macd.empty: df = df.join(macd)
-        df.ta.ema(length=settings.MA_SHORT_PERIOD, append=True)
-        df.ta.ema(length=settings.MA_LONG_PERIOD, append=True)
-        bbands = df.ta.bbands(length=settings.BBANDS_PERIOD, std=settings.BBANDS_STD_DEV)
-        if bbands is not None and not bbands.empty: df = df.join(bbands)
-        df.ta.atr(length=settings.ATR_PERIOD, append=True)
-        if 'volume' not in df.columns: df['volume'] = 0
-        return df
-
-    @staticmethod
-    def _get_indicator_signals_and_score(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], float]:
-        signals_details: List[Dict[str, Any]] = []
-        total_score = 0.0
-        if len(df) < 2: return signals_details, total_score
-        latest = df.iloc[-1]
-        previous = df.iloc[-2]
-
-        # 1. MA State & Event
-        short_ma_key, long_ma_key = f'EMA_{settings.MA_SHORT_PERIOD}', f'EMA_{settings.MA_LONG_PERIOD}'
-        latest_short, latest_long = latest.get(short_ma_key), latest.get(long_ma_key)
-        prev_short, prev_long = previous.get(short_ma_key), previous.get(long_ma_key)
-        if all(pd.notna(v) for v in [latest_short, latest_long, prev_short, prev_long]):
-            state_score, event_score = 0, 0
-            state_signal, event_signal = "NEUTRAL_STATE", "NO_EVENT"
-            # State Score
-            if latest_short > latest_long:
-                state_signal = "GOLDEN_STATE"
-                state_score = settings.WEIGHT_MA_STATE
-            elif latest_short < latest_long:
-                state_signal = "DEATH_STATE"
-                state_score = -settings.WEIGHT_MA_STATE
-            # Event Score
-            if prev_short < prev_long and latest_short > latest_long:
-                event_signal = "GOLDEN_CROSS"
-                event_score = settings.WEIGHT_MA_EVENT
-            elif prev_short > prev_long and latest_short < latest_long:
-                event_signal = "DEATH_CROSS"
-                event_score = -settings.WEIGHT_MA_EVENT
-
-            total_score += state_score + event_score
-            signals_details.append({"indicator": "MA", "signal": f"{state_signal} & {event_signal}",
-                                    "value": f"S:{latest_short:.2f},L:{latest_long:.2f}",
-                                    "score_change": state_score + event_score})
-        else:
-            signals_details.append(
-                {"indicator": "MA", "signal": "DATA_UNAVAILABLE", "value": "NaN", "score_change": 0})
-
-        # 2. MACD State & Event
-        macd_key = f'MACD_{settings.MACD_FAST_PERIOD}_{settings.MACD_SLOW_PERIOD}_{settings.MACD_SIGNAL_PERIOD}'
-        signal_key = f'MACDs_{settings.MACD_FAST_PERIOD}_{settings.MACD_SLOW_PERIOD}_{settings.MACD_SIGNAL_PERIOD}'
-        latest_macd, latest_signal = latest.get(macd_key), latest.get(signal_key)
-        prev_macd, prev_signal = previous.get(macd_key), previous.get(signal_key)
-        if all(pd.notna(v) for v in [latest_macd, latest_signal, prev_macd, prev_signal]):
-            state_score, event_score = 0, 0
-            state_signal, event_signal = "NEUTRAL_STATE", "NO_EVENT"
-            # State Score
-            if latest_macd > latest_signal:
-                state_signal = "BULLISH_STATE"
-                state_score = settings.WEIGHT_MACD_STATE
-            elif latest_macd < latest_signal:
-                state_signal = "BEARISH_STATE"
-                state_score = -settings.WEIGHT_MACD_STATE
-            # Event Score
-            if prev_macd < prev_signal and latest_macd > latest_signal:
-                event_signal = "GOLDEN_CROSS"
-                event_score = settings.WEIGHT_MACD_EVENT
-            elif prev_macd > prev_signal and latest_macd < latest_signal:
-                event_signal = "DEATH_CROSS"
-                event_score = -settings.WEIGHT_MACD_EVENT
-
-            total_score += state_score + event_score
-            signals_details.append({"indicator": "MACD", "signal": f"{state_signal} & {event_signal}",
-                                    "value": f"M:{latest_macd:.2f},S:{latest_signal:.2f}",
-                                    "score_change": state_score + event_score})
-        else:
-            signals_details.append(
-                {"indicator": "MACD", "signal": "DATA_UNAVAILABLE", "value": "NaN", "score_change": 0})
-
-        # 3. RSI State (Extreme and Trend)
-        rsi_key = f'RSI_{settings.RSI_PERIOD}'
-        rsi_value = latest.get(rsi_key)
-        if pd.notna(rsi_value):
-            extreme_score, trend_score = 0, 0
-            extreme_signal, trend_signal = "NEUTRAL_EXTREME", "NEUTRAL_TREND"
-            # Extreme Score
-            if rsi_value < settings.RSI_OVERSOLD:
-                extreme_signal = "OVERSOLD"
-                extreme_score = settings.WEIGHT_RSI_EXTREME
-            elif rsi_value > settings.RSI_OVERBOUGHT:
-                extreme_signal = "OVERBOUGHT"
-                extreme_score = -settings.WEIGHT_RSI_EXTREME
-            # Trend Score
-            if 50 < rsi_value <= settings.RSI_OVERBOUGHT:
-                trend_signal = "BULLISH_ZONE"
-                trend_score = settings.WEIGHT_RSI_TREND
-            elif settings.RSI_OVERSOLD <= rsi_value < 50:
-                trend_signal = "BEARISH_ZONE"
-                trend_score = -settings.WEIGHT_RSI_TREND
-
-            total_score += extreme_score + trend_score
-            signals_details.append(
-                {"indicator": "RSI", "signal": f"{extreme_signal} & {trend_signal}", "value": rsi_value,
-                 "score_change": extreme_score + trend_score})
-        else:
-            signals_details.append(
-                {"indicator": "RSI", "signal": "DATA_UNAVAILABLE", "value": "NaN", "score_change": 0})
-
-        # 4. Bollinger Bands State (Breakout)
-        price_close = latest.get('close')
-        std_dev_str = f"{float(settings.BBANDS_STD_DEV):.1f}"
-        bbu_key, bbl_key = f'BBU_{settings.BBANDS_PERIOD}_{std_dev_str}', f'BBL_{settings.BBANDS_PERIOD}_{std_dev_str}'
-        latest_bbu, latest_bbl = latest.get(bbu_key), latest.get(bbl_key)
-        if pd.notna(price_close) and all(pd.notna(val) for val in [latest_bbu, latest_bbl]):
-            score_change = 0
-            signal_text = "INSIDE_BANDS"
-            if price_close > latest_bbu:
-                signal_text = "BREAK_UPPER"
-                score_change = settings.WEIGHT_BBANDS_BREAKOUT
-            elif price_close < latest_bbl:
-                signal_text = "BREAK_LOWER"
-                score_change = -settings.WEIGHT_BBANDS_BREAKOUT
-            total_score += score_change
-            signals_details.append({"indicator": "BollingerBands", "signal": signal_text,
-                                    "value": f"P:{format_price_dynamically(price_close)},U:{format_price_dynamically(latest_bbu)},L:{format_price_dynamically(latest_bbl)}",
-                                    "score_change": score_change})
-        else:
-            signals_details.append(
-                {"indicator": "BollingerBands", "signal": "DATA_UNAVAILABLE", "value": "NaN", "score_change": 0})
-
-        # 5. Volume Confirmation
-        volume_latest = latest.get('volume')
-        if pd.notna(volume_latest):
-            avg_volume_period = 5
-            signal_text = "NOT_ENOUGH_DATA_FOR_AVG"
-            vol_value_str = f"Vol:{volume_latest:.2f}"
-            if len(df) > avg_volume_period + 1:
-                avg_volume = df['volume'].iloc[-(avg_volume_period + 1):-1].mean()
-                if pd.notna(avg_volume) and avg_volume > 0:
-                    vol_value_str = f"Vol:{volume_latest:.2f},Avg5P:{avg_volume:.2f}"
-                    signal_text = "HIGH_VOLUME" if volume_latest > avg_volume * 1.5 else "NORMAL_OR_LOW_VOLUME"
-                else:
-                    signal_text = "VOLUME_AVG_NOT_CALCULABLE"
-            signals_details.append(
-                {"indicator": "Volume", "signal": signal_text, "value": vol_value_str, "score_change": 0})
-        else:
-            signals_details.append(
-                {"indicator": "Volume", "signal": "DATA_UNAVAILABLE", "value": "NaN", "score_change": 0})
-
-        return signals_details, total_score
-
-    @staticmethod
-    def _determine_overall_signal_and_exits(current_price: float, current_atr: float, pre_approved_signal: str) -> (
-            Tuple)[str, float | None, float | None, float | None]:
-        """
-        Calculates exit prices for an already approved signal.
-        Now returns SL, TP1, and TP2.
-        """
-        suggested_sl, suggested_tp1, suggested_tp2 = None, None, None
-
-        if pd.notna(current_atr) and current_atr > 0:
-            stop_loss_distance = settings.ATR_STOP_LOSS_MULTIPLIER * current_atr
-
-            take_profit_1_distance = stop_loss_distance * settings.RISK_REWARD_RATIO_TP1
-            take_profit_2_distance = stop_loss_distance * settings.RISK_REWARD_RATIO_TP2
-
-            if pre_approved_signal == "POTENTIAL_BUY":
-                suggested_sl = current_price - stop_loss_distance
-                suggested_tp1 = current_price + take_profit_1_distance
-                suggested_tp2 = current_price + take_profit_2_distance
-            elif pre_approved_signal == "POTENTIAL_SELL":
-                suggested_sl = current_price + stop_loss_distance
-                suggested_tp1 = current_price - take_profit_1_distance
-                suggested_tp2 = current_price - take_profit_2_distance
-        return pre_approved_signal, suggested_sl, suggested_tp1, suggested_tp2

@@ -5,22 +5,26 @@ from sqlalchemy import select
 import asyncio
 from .data_fetcher import data_fetcher_instance  # Keep for potential other uses
 from ..core.config import settings
-from ..llm_providers import get_llm_strategy
-from ..strategies.multi_indicator_strategy import MultiIndicatorStrategy
+from ..llm_providers.base import LLMStrategy
 from ..db.session import SessionLocal
-from ..db.models import AnalysisResult, Symbol, Strategy, HistoricalOhlcv
+from ..db.models import AnalysisResult, Symbol, Strategy, HistoricalOhlcv, Position
 from ..utils.formatters import format_price_dynamically
+from .parameter_manager import ParameterManager
+
+from .backtest.db_data_fetcher import fetch_df_from_postgres
+from ..strategies.multi_indicator_strategy import MultiIndicatorStrategy
+from .order_executor import OrderExecutor
 
 
 class AnalysisService:
-    def __init__(self):
-        # Data fetcher is no longer the primary source for analysis data,
-        # but can be kept for other potential direct-to-exchange features.
-        self.data_fetcher = data_fetcher_instance
-        self.llm_strategy = get_llm_strategy(settings)
-        self.trading_strategy = MultiIndicatorStrategy()
+    def __init__(self, param_manager: ParameterManager, order_executor: OrderExecutor, llm_strategy: LLMStrategy):
+        """
+        Initializes the AnalysisService with its required dependencies.
+        """
+        self.param_manager = param_manager
+        self.order_executor = order_executor
+        self.llm_strategy = llm_strategy
 
-    # ... [ _get_or_create_symbol and _get_or_create_strategy methods remain unchanged ] ...
     def _get_or_create_symbol(self, db: Session, symbol_name: str) -> Symbol:
         """Finds an existing symbol or creates a new one in the database."""
         symbol = db.query(Symbol).filter(Symbol.name == symbol_name).first()
@@ -39,14 +43,13 @@ class AnalysisService:
             print(f"Strategy '{strategy_name}' not found in DB, creating new entry.")
             strategy = Strategy(
                 strategy_name=strategy_name,
-                description="Multi-Indicator Scoring Strategy with ATR-based exits",
+                description="Volatility Adaptive Signal Confluence Strategy V7",
                 config=config
             )
             db.add(strategy)
             db.commit()
             db.refresh(strategy)
         return strategy
-
     def _fetch_data_from_db(
             self, db: Session, symbol_id: int, timeframe: str, limit: int
     ) -> pd.DataFrame | None:
@@ -86,190 +89,159 @@ class AnalysisService:
 
         return df
 
-    async def generate_comprehensive_analysis(
-            self,
-            symbol_name: str,
-            signal_timeframe: str = settings.SIGNAL_TIMEFRAME,
-            trend_timeframe_short: str = settings.TREND_TIMEFRAME_SHORT,
-            trend_timeframe_long: str = settings.TREND_TIMEFRAME_LONG
-    ) -> Dict[str, Any] | None:
+    async def generate_comprehensive_analysis(self, symbol_name: str) -> Dict[str, Any] | None:
         """
-        Orchestration method for MTFA, now reading from the local database.
+        Orchestration method for the complete trading lifecycle.
+        It checks for open positions and decides whether to open, monitor, or close a trade.
         """
-        limit_needed = 200  # The number of candles needed for indicator calculation
-
+        print(f"\n--- Analyzing {symbol_name} ---")
         db: Session = SessionLocal()
         try:
             symbol_record = self._get_or_create_symbol(db, symbol_name)
-            if not symbol_record:
-                print(f"Could not find or create symbol '{symbol_name}' in DB.")
-                return None
 
-            # ** REFACTORED DATA FETCHING **
-            # Fetch all dataframes from the local database in parallel.
-            df_signal = self._fetch_data_from_db(db, symbol_record.id, signal_timeframe, limit_needed)
-            df_trend_short = self._fetch_data_from_db(db, symbol_record.id, trend_timeframe_short, limit_needed)
-            df_trend_long = self._fetch_data_from_db(db, symbol_record.id, trend_timeframe_long, limit_needed)
+            # [STATEFUL LOGIC] Check if we already have an open position for this symbol
+            open_position = db.query(Position).filter(
+                Position.symbol_id == symbol_record.id,
+                Position.is_open == True
+            ).first()
 
-            if any(df is None or df.empty for df in [df_signal, df_trend_short, df_trend_long]):
-                print(f"Could not fetch sufficient OHLCV data from local DB for {symbol_name}.")
-                return None
+            if open_position:
+                # If a position is open, our only job is to check for an exit signal.
+                await self._handle_open_position(db, symbol_record, open_position)
+            else:
+                # If no position is open, we look for a new entry signal.
+                await self._handle_no_position(db, symbol_record)
 
-            # The rest of the logic remains the same as it expects DataFrames in a specific format
-            strategy_result = await self.trading_strategy.generate_signals(df_signal, df_trend_short, df_trend_long)
-            if not strategy_result:
-                print(f"Strategy failed to generate signals for {symbol_name}.")
-                return None
-
-            # ... [ The rest of the method (LLM call, DB saving) remains unchanged ] ...
-            final_signal = strategy_result['overall_signal']
-            original_score = strategy_result['total_score']
-            current_price = strategy_result['current_price']
-
-            price_str = format_price_dynamically(current_price)
-            print(
-                f"Analysis for {symbol_name} ({signal_timeframe}): Price={price_str}, Score={original_score:.1f}, Signal: {final_signal}")
-
-            ai_suggestion = "AI analysis not triggered due to neutral or filtered signal."
-            should_call_llm = final_signal in ["POTENTIAL_BUY", "POTENTIAL_SELL"]
-
-            if should_call_llm:
-                print(f"  Signal is valid. Querying LLM...")
-                prompt = self._build_llm_prompt(symbol_name, signal_timeframe, strategy_result, df_signal)
-                ai_suggestion = await self.llm_strategy.generate_analysis(prompt)
-
-            strategy_config = {
-                "atr_sl_multiplier": settings.ATR_STOP_LOSS_MULTIPLIER,
-                "rr_ratio_tp1": settings.RISK_REWARD_RATIO_TP1,
-                "rr_ratio_tp2": settings.RISK_REWARD_RATIO_TP2
-            }
-            # symbol_record is already fetched
-            strategy_record = self._get_or_create_strategy(db, "multi_indicator_v1.2_mtfa", strategy_config)
-
-            db_current_price = float(strategy_result['current_price']) if pd.notna(
-                strategy_result['current_price']) else None
-            db_composite_score = float(strategy_result['total_score']) if pd.notna(
-                strategy_result['total_score']) else None
-            db_suggested_sl = float(strategy_result.get('suggested_sl')) if pd.notna(
-                strategy_result.get('suggested_sl')) else None
-            db_suggested_tp1 = float(strategy_result.get('suggested_tp1')) if pd.notna(
-                strategy_result.get('suggested_tp1')) else None
-            db_suggested_tp2 = float(strategy_result.get('suggested_tp2')) if pd.notna(
-                strategy_result.get('suggested_tp2')) else None
-
-            if db_current_price is None or db_composite_score is None:
-                print(f"Error: Price or Score is None for {symbol_name}, skipping DB save.")
-                return None
-
-            db_analysis_result = AnalysisResult(
-                timestamp=pd.Timestamp.now(tz='UTC').to_pydatetime(),
-                symbol_id=symbol_record.id,
-                strategy_id=strategy_record.id,
-                timeframe=signal_timeframe,
-                current_price=db_current_price,
-                composite_score=db_composite_score,
-                overall_signal=final_signal,
-                suggested_sl=db_suggested_sl,
-                suggested_tp1=db_suggested_tp1,
-                suggested_tp=db_suggested_tp2,
-                llm_queried=should_call_llm,
-                llm_analysis=ai_suggestion,
-                indicator_details=strategy_result.get('signals_details')
-            )
-
-            db.add(db_analysis_result)
-            db.commit()
-            db.refresh(db_analysis_result)
-            print(f"Analysis for {symbol_name} successfully saved to database.")
-
-            return {
-                "timestamp": db_analysis_result.timestamp,
-                "symbol": symbol_name,
-                "timeframe": signal_timeframe,
-                "local_signal": final_signal,
-                "price": db_current_price,
-                "stop_loss": db_suggested_sl,
-                "take_profit_1": db_suggested_tp1,
-                "take_profit": db_suggested_tp2,
-                "ai_analysis": ai_suggestion,
-                "rsi": next(
-                    (d.get('value') for d in strategy_result.get('signals_details', []) if d.get('indicator') == 'RSI'),
-                    float('nan')),
-                "details": {
-                    "composite_score": db_composite_score,
-                    "individual_signals_details": strategy_result.get('signals_details', [])
-                }
-            }
         except Exception as e:
-            print(f"Database Error in generate_comprehensive_analysis: {e}")
-            import traceback;
+            print(f"  > An unexpected error occurred during analysis for {symbol_name}: {e}")
+            import traceback
             traceback.print_exc()
-            db.rollback()
-            return None
         finally:
             db.close()
 
+    async def _handle_no_position(self, db: Session, symbol: Symbol):
+        """Logic for when we are flat and looking for a new entry."""
+        print(f"  > No open position for {symbol.name}. Looking for entry signals.")
+
+        symbol_params = self.param_manager.get_params_for_symbol(symbol.name)
+        trading_strategy = MultiIndicatorStrategy(params=symbol_params)
+
+        # Fetch data
+        end_date = pd.Timestamp.now(tz='UTC')
+        start_date = end_date - pd.Timedelta(days=100)
+        df_signal = fetch_df_from_postgres(symbol.name, settings.SIGNAL_TIMEFRAME, start_date, end_date)
+        df_regime = fetch_df_from_postgres(symbol.name, settings.TREND_TIMEFRAME_SHORT, start_date, end_date)
+        if df_signal is None or df_regime is None: return
+
+        # Generate signal
+        strategy_result = await trading_strategy.generate_signals(df_signal, df_regime)
+        if not strategy_result or strategy_result['overall_signal'] != "POTENTIAL_BUY":
+            print(f"  > No valid entry signal found for {symbol.name}.")
+            return
+
+        print(f"  > POTENTIAL_BUY signal found for {symbol.name}!")
+
+        # --- [EXECUTION LOGIC] ---
+        # 1. Calculate order size (simplified for now, using a fixed amount)
+        # A full implementation would use the risk management logic we discussed.
+        order_amount = 0.001  # Example: buy 0.001 BTC
+
+        # 2. Place the market buy order
+        entry_order = await self.order_executor.create_market_order(symbol.name, 'buy', order_amount)
+        if not entry_order:
+            print(f"  > FAILED to place entry order for {symbol.name}. Aborting.")
+            return
+
+        # 3. Place the stop loss order
+        sl_price = strategy_result['risk_management']['suggested_sl']
+        sl_order = await self.order_executor.create_stop_loss_order(symbol.name, 'sell', order_amount, sl_price)
+        if not sl_order:
+            print(f"  > CRITICAL: FAILED to place stop loss order for {symbol.name}. Manual intervention required!")
+            # In a real system, this would trigger an emergency alert.
+            # We should try to close the position we just opened for safety.
+            await self.order_executor.close_market_position(symbol.name, 'LONG', order_amount)
+            return
+
+        # 4. [PERSISTENCE] Save the new position to the database
+        new_position = Position(
+            symbol_id=symbol.id,
+            is_open=True,
+            position_side='LONG',
+            entry_price=entry_order['price'],
+            quantity=entry_order['amount'],
+            entry_order_id=entry_order['id'],
+            stop_loss_order_id=sl_order['id'],
+            initial_stop_loss_price=sl_price
+        )
+        db.add(new_position)
+        db.commit()
+        print(f"  > Successfully opened and persisted new LONG position for {symbol.name}.")
+
+    async def _handle_open_position(self, db: Session, symbol: Symbol, position: Position):
+        """Logic for when we have a position and are only checking for exits."""
+        print(f"  > Found open LONG position for {symbol.name}. Checking for exit signals.")
+
+        symbol_params = self.param_manager.get_params_for_symbol(symbol.name)
+        trading_strategy = MultiIndicatorStrategy(params=symbol_params)
+
+        # Fetch data
+        end_date = pd.Timestamp.now(tz='UTC')
+        start_date = end_date - pd.Timedelta(days=100)
+        df_signal = fetch_df_from_postgres(symbol.name, settings.SIGNAL_TIMEFRAME, start_date, end_date)
+        df_regime = fetch_df_from_postgres(symbol.name, settings.TREND_TIMEFRAME_SHORT, start_date, end_date)
+        if df_signal is None or df_regime is None: return
+
+        # --- Check for Exit Signal ---
+        # The exit signal is the trend reversal (death cross)
+        # We need to calculate the MAs to check this condition.
+        is_high_vol = df_signal['ATR_14'].iloc[-1] > df_signal['ATR_14'].rolling(100).mean().iloc[-1]
+        if is_high_vol:
+            ma_short = df_signal['close'].rolling(symbol_params['high_vol_ma_short']).mean().iloc[-1]
+            ma_long = df_signal['close'].rolling(symbol_params['high_vol_ma_long']).mean().iloc[-1]
+        else:
+            ma_short = df_signal['close'].rolling(symbol_params['low_vol_ma_short']).mean().iloc[-1]
+            ma_long = df_signal['close'].rolling(symbol_params['low_vol_ma_long']).mean().iloc[-1]
+
+        if ma_short < ma_long:
+            print(f"  > Exit signal (Death Cross) found for {symbol.name}. Closing position.")
+
+            # --- [EXECUTION LOGIC] ---
+            # 1. Close the position with a market order
+            close_order = await self.order_executor.close_market_position(
+                symbol.name, 'LONG', float(position.quantity)
+            )
+            if not close_order:
+                print(f"  > CRITICAL: FAILED to close position for {symbol.name}. Manual intervention required!")
+                return
+
+            # 2. Cancel the now-redundant stop loss order
+            await self.order_executor.cancel_order(position.stop_loss_order_id, symbol.name)
+
+            # 3. [PERSISTENCE] Update the position status in the database
+            position.is_open = False
+            db.commit()
+            print(f"  > Successfully closed and updated position for {symbol.name}.")
+        else:
+            print(f"  > No exit signal. Holding position for {symbol.name}.")
+            # [FAULT TOLERANCE] We can add the SL sync logic here if needed.
+            # E.g., check if the SL order still exists on the exchange. If not, recreate it.
+
     # ... [ _build_llm_prompt, get_all_analyses_from_db, close_llm_resources remain unchanged ] ...
     def _build_llm_prompt(self, symbol: str, timeframe: str, result: Dict[str, Any], df: pd.DataFrame) -> str:
-        """
-        Builds a detailed and high-quality prompt for the LLM based on the strategy results.
-        This method is now fully implemented.
-        """
+        # This function should be reviewed to ensure it uses the new strategy_result structure
         price_str = format_price_dynamically(result['current_price'])
-
-        # Build a summary of key contributing signals
-        prompt_indicator_summary_for_llm = ""
-        significant_signal_count = 0
-        if result.get('signals_details'):
-            for detail in result['signals_details']:
-                if detail.get("score_change", 0) != 0:  # Only include signals that contributed to the score
-                    if significant_signal_count < 4:  # Limit to ~4 key contributing signals for brevity
-                        val_str = f"{detail['value']:.2f}" if isinstance(detail['value'], float) else str(
-                            detail['value'])
-                        prompt_indicator_summary_for_llm += f"          - {detail['indicator']} ({detail['signal']}): {val_str} (Score: {detail['score_change']:+})\n"
-                        significant_signal_count += 1
-
-        if not prompt_indicator_summary_for_llm:
-            prompt_indicator_summary_for_llm = "          - No strong individual indicator signals detected.\n"
-
-        # Build the main prompt string
         prompt = f"""
-            Cryptocurrency Analysis Request for {symbol} ({timeframe}):
+        Cryptocurrency Analysis Request for {symbol} ({timeframe}):
 
-            **1. Core Signal Data:**
-               - **Price:** {price_str}
-               - **Calculated Signal:** {result['overall_signal']} (Total Score: {result['total_score']})
-        """
-        suggested_sl = result.get('suggested_sl')
-        suggested_tp1 = result.get('suggested_tp1')
-        suggested_tp2 = result.get('suggested_tp2')
+        - **Price:** {price_str}
+        - **Calculated Signal:** {result['overall_signal']} (Score: {result['total_score']})
+        - **Suggested Stop Loss (SL):** {format_price_dynamically(result.get('suggested_sl')) if result.get('suggested_sl') else 'N/A'}
 
-        if suggested_sl is not None and suggested_tp2 is not None:  # Check for the final TP
-            prompt += f"""           - **Suggested Stop Loss (SL):** {format_price_dynamically(suggested_sl)}
-                   - **Suggested Take Profit 1 (TP1 @ 1R):** {format_price_dynamically(suggested_tp1)}
-                   - **Suggested Take Profit 2 (TP2 @ {settings.RISK_REWARD_RATIO_TP2}R):** {format_price_dynamically(suggested_tp2)}
-        """
-
-        prompt += f"""
-            **2. Key Contributing Indicator Signals:**
-            {prompt_indicator_summary_for_llm}
-            **3. Recent Market Data with Indicators (last 5 periods):**
-               ```
-               {df.iloc[-5:].to_string(float_format=lambda x: format_price_dynamically(x))}
-               ```
-
-            **AI Analyst Task:**
-
-            You are a professional, data-driven crypto analyst. Your advice must be concise, actionable, and based *only* on the data provided.
-
-            1.  **Assess the Signal:** Briefly evaluate the `Calculated Signal`. Is the score strong? Do the contributing indicators show clear alignment (confluence) or are there mixed signals (divergence)?
-            2.  **Validate Exit Levels:** Review the `Suggested Stop Loss (SL)` and `Take Profit (TP1, TP2)`. Are they placed at logical levels? Provide your **final suggested SL and TP prices**.
-            3.  **Provide Final Suggestion:** Based on everything, give a single, clear trading suggestion from this list:
-                **[Strong Buy / Buy / Hold / Sell / Strong Sell / Avoid]**
-            4.  **Justify:** In 1-2 sentences, explain *why* you made that suggestion.
-            5.  **Identify Key Factor:** Mention the single most important risk to watch for OR a key confirmation that would strengthen the signal.
-
-            **Format your response clearly using Markdown.**
+        **AI Analyst Task:**
+        You are a professional, data-driven crypto analyst. Your advice must be concise and actionable.
+        1.  Assess the signal: Is it strong? What are the key confirming factors in the recent data?
+        2.  Provide Final Suggestion: **[Strong Buy / Buy / Hold / Avoid]**
+        3.  Justify in 1-2 sentences.
         """
         return prompt.strip()
 
@@ -283,5 +255,3 @@ class AnalysisService:
     async def close_llm_resources(self):
         await self.llm_strategy.close_clients()
 
-
-analysis_service = AnalysisService()

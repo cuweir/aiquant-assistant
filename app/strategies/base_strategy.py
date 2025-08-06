@@ -4,14 +4,16 @@ from typing import Dict, Any
 
 class TradingStrategy(ABC):
     @abstractmethod
-    async def generate_signals(
-        self,
-        df_signal: pd.DataFrame,
-        df_trend_short: pd.DataFrame,
-        df_trend_long: pd.DataFrame
-    ) -> Dict[str, Any]:
+    async def generate_signals(self, df_signal: pd.DataFrame, df_regime: pd.DataFrame) -> Dict[str, Any] | None:
         """
-        Takes DataFrames for signal, short-term trend, and long-term trend,
-        and returns a dictionary of analysis results.
+        The core method for a strategy to generate trading signals.
+
+        Args:
+            df_signal: DataFrame for the primary signal timeframe.
+            df_regime: DataFrame for the higher timeframe regime filter.
+
+        Returns:
+            A dictionary containing the analysis result (e.g., signal, price, sl),
+            or None if no signal is generated.
         """
         pass

@@ -84,3 +84,35 @@ class HistoricalOhlcv(Base):
         # Create a composite index for fast retrieval of time-series data for a specific symbol/timeframe.
         Index('ix_symbol_timeframe_opentime_desc', 'symbol_id', 'timeframe', open_time.desc()),
     )
+
+
+class Position(Base):
+    """
+    Stores the state of currently open trading positions.
+    This table provides the "long-term memory" for the trading bot,
+    ensuring state persistence across application restarts.
+    """
+    __tablename__ = "positions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol_id = Column(Integer, ForeignKey("symbols.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+
+    is_open = Column(Boolean, default=True, nullable=False)
+    position_side = Column(String, nullable=False)  # 'LONG' or 'SHORT'
+
+    entry_price = Column(Numeric(18, 8), nullable=False)
+    quantity = Column(Numeric(24, 8), nullable=False)
+
+    # --- Exchange Order Information ---
+    entry_order_id = Column(String, unique=True)
+    # The SL order is critical. We need to track its ID to cancel/replace it.
+    stop_loss_order_id = Column(String, unique=True)
+
+    # --- Our Internal Risk Management ---
+    initial_stop_loss_price = Column(Numeric(18, 8), nullable=False)
+
+    # --- Timestamps ---
+    opened_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    symbol = relationship("Symbol")

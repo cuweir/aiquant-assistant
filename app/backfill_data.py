@@ -188,7 +188,7 @@ async def main():
     # Define the start date for the backfill
     # IMPORTANT: Exchanges have limits on how far back you can go.
     # For Binance, 2017 is generally a safe start for BTC.
-    START_DATE = "2023-01-01"
+    START_DATE = "2022-01-01"
 
     print("=" * 50)
     print("Starting Historical Data Backfill Process")

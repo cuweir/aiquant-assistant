@@ -1,8 +1,7 @@
 import itertools
-import json
 from typing import Dict, Any, List
 
-from app.run_backtest import run_parameterized_backtest
+from .runner import run_parameterized_backtest
 from app.job_manager import update_task_progress  # <-- Import the update function
 
 

@@ -3,14 +3,15 @@ from typing import List
 from sqlalchemy.orm import Session
 
 from ...models.schemas import SignalInput, AIAnalysisOutput, AnalysisDetails, SignalDetail
-from ...services.analysis_service import AnalysisService, analysis_service
+from ...services.analysis_service import AnalysisService
 from ...db.session import get_db
+from ...containers import container
 
 router = APIRouter()
 
 
 def get_analysis_service():
-    return analysis_service
+    return container.analysis_service
 
 
 @router.post("/trigger-analysis", response_model=AIAnalysisOutput)

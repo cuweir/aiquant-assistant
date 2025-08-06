@@ -15,6 +15,9 @@ class Settings:
     BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY_READONLY")
     BINANCE_API_SECRET: str = os.getenv("BINANCE_API_SECRET_READONLY")
 
+    BINANCE_FUTURES_TESTNET_API_KEY: str = os.getenv("BINANCE_FUTURES_TESTNET_API_KEY")
+    BINANCE_FUTURES_TESTNET_API_SECRET: str = os.getenv("BINANCE_FUTURES_TESTNET_API_SECRET")
+
     # --- LLM Provider Configuration ---
     ACTIVE_LLM_PROVIDER: str = os.getenv("ACTIVE_LLM_PROVIDER", "gemini").lower()
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY")
@@ -25,9 +28,9 @@ class Settings:
     # OPENAI_MODEL_NAME: str = os.getenv("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
 
     # --- Timeframe Configuration ---
-    SIGNAL_TIMEFRAME: str = "15m"
-    TREND_TIMEFRAME_SHORT: str = "1h"
-    TREND_TIMEFRAME_LONG: str = "4h"
+    SIGNAL_TIMEFRAME: str = "1h"
+    TREND_TIMEFRAME_SHORT: str = "4h"
+    # TREND_TIMEFRAME_LONG: str = "1d" # Long trend can now be daily
 
     SYMBOLS_TO_MONITOR: list[str] = [
         "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
@@ -83,7 +86,12 @@ if settings.ACTIVE_LLM_PROVIDER == "gemini" and not settings.GEMINI_API_KEY:
 # if settings.ACTIVE_LLM_PROVIDER == "openai" and not settings.OPENAI_API_KEY:
 #     raise ValueError("ACTIVE_LLM_PROVIDER is 'openai' but OPENAI_API_KEY is missing in .env file.")
 
-if not all([settings.BINANCE_API_KEY, settings.BINANCE_API_SECRET]):
+if not all([
+    settings.BINANCE_API_KEY,
+    settings.BINANCE_API_SECRET,
+    settings.BINANCE_FUTURES_TESTNET_API_KEY,
+    settings.BINANCE_FUTURES_TESTNET_API_SECRET
+]):
     raise ValueError("Binance API keys are missing. Please set them in your .env file.")
 
 if not settings.DATABASE_URL:

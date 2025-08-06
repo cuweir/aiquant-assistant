@@ -1,0 +1,47 @@
+{
+  "BTC/USDT": {
+    "description": "Optimized parameters for BTC/USDT on the 1h timeframe.",
+    "low_vol_ma_long": 60,
+    "high_vol_ma_long": 50,
+    "low_vol_adx_threshold": 35,
+    "high_vol_adx_threshold": 30,
+    "low_vol_atr_sl_multiplier": 2.0,
+    "high_vol_atr_sl_multiplier": 2.5
+  },
+  "ETH/USDT": {
+    "description": "Optimized parameters for ETH/USDT on the 1h timeframe.",
+    "low_vol_ma_long": 80,
+    "high_vol_ma_long": 50,
+    "low_vol_adx_threshold": 30,
+    "high_vol_adx_threshold": 30,
+    "low_vol_atr_sl_multiplier": 2.0,
+    "high_vol_atr_sl_multiplier": 2.5
+  },
+  "BNB/USDT": {
+    "description": "Optimized parameters for BNB/USDT on the 1h timeframe.",
+    "low_vol_ma_long": 60,
+    "high_vol_ma_long": 50,
+    "low_vol_adx_threshold": 30,
+    "high_vol_adx_threshold": 25,
+    "low_vol_atr_sl_multiplier": 2.0,
+    "high_vol_atr_sl_multiplier": 2.5
+  },
+  "SOL/USDT": {
+    "description": "Optimized parameters for SOL/USDT on the 1h timeframe.",
+    "low_vol_ma_long": 80,
+    "high_vol_ma_long": 50,
+    "low_vol_adx_threshold": 35,
+    "high_vol_adx_threshold": 30,
+    "low_vol_atr_sl_multiplier": 2.0,
+    "high_vol_atr_sl_multiplier": 2.5
+  },
+  "XRP/USDT": {
+    "description": "Optimized parameters for XRP/USDT on the 1h timeframe.",
+    "low_vol_ma_long": 80,
+    "high_vol_ma_long": 50,
+    "low_vol_adx_threshold": 35,
+    "high_vol_adx_threshold": 25,
+    "low_vol_atr_sl_multiplier": 2.0,
+    "high_vol_atr_sl_multiplier": 2.5
+  }
+}

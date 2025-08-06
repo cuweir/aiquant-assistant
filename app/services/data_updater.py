@@ -23,11 +23,14 @@ class DataUpdaterService:
         # Collect all unique timeframes from settings to avoid hardcoding
         self.timeframes_to_monitor: Set[str] = {
             settings.SIGNAL_TIMEFRAME,
-            settings.TREND_TIMEFRAME_SHORT,
-            settings.TREND_TIMEFRAME_LONG
+            settings.TREND_TIMEFRAME_SHORT
         }
-        print(f"DataUpdaterService initialized. Monitoring symbols: {self.symbols_to_monitor}")
-        print(f"Monitoring timeframes: {self.timeframes_to_monitor}")
+        self.timeframes_to_monitor.add("15m")
+        self.timeframes_to_monitor.add("4h")
+        self.timeframes_to_monitor.add("1d")
+        print("DataUpdaterService initialized.")
+        print(f"Monitoring symbols: {self.symbols_to_monitor}")
+        print(f"Ensuring data is available for timeframes: {sorted(list(self.timeframes_to_monitor))}")
 
     async def run_update(self):
         """
