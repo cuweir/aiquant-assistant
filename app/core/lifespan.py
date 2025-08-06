@@ -6,12 +6,7 @@ from apscheduler.triggers.cron import CronTrigger
 import pandas as pd
 
 from ..core.config import settings
-from ..llm_providers import get_llm_strategy
-from ..services.data_fetcher import data_fetcher_instance
-from ..services.data_updater import DataUpdaterService
-from ..services.order_executor import OrderExecutor
-from ..services.parameter_manager import ParameterManager
-from ..services.analysis_service import AnalysisService
+
 from ..containers import container
 
 scheduler = AsyncIOScheduler(timezone="UTC")
@@ -100,7 +95,6 @@ async def lifespan(app: FastAPI):
         scheduler.shutdown()
         print("Scheduler shut down.")
 
-    await data_fetcher_instance.close_exchange()
-    await analysis_service.close_llm_resources()
-    await order_executor.close_connections()
+    await container.analysis_service.close_llm_resources()
+    await container.order_executor.close_connections()
     print("Resources cleaned up.")

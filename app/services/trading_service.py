@@ -1,10 +1,13 @@
 # app/services/trading_service.py
 
 from typing import Dict, Any
+from sqlalchemy import func
 from sqlalchemy.orm import Session
+
 
 from .order_executor import OrderExecutor
 from .parameter_manager import ParameterManager
+from ..core.config import settings
 from ..db.models import Position, Symbol
 
 
@@ -31,48 +34,63 @@ class TradingService:
         ).first()
 
         if open_position:
-            # If a position is open, we only care about exit signals.
-            await self._handle_exit_logic(db, symbol, open_position, strategy_result)
+            if strategy_result.get("exit_signal"):
+                await self._handle_exit_logic(db, symbol, open_position, strategy_result)
+            else:
+                print(f"  > TradingService: Holding position for {symbol.name}.")
         else:
-            # If no position is open, we only care about entry signals.
             if signal == "POTENTIAL_BUY":
                 await self._handle_entry_logic(db, symbol, strategy_result)
 
     async def _handle_entry_logic(self, db: Session, symbol: Symbol, strategy_result: Dict[str, Any]):
-        """Handles the logic for opening a new position."""
-        print(f"  > TradingService: Received POTENTIAL_BUY for {symbol.name}. Executing entry logic.")
+        print(f"  > TradingService: Received POTENTIAL_BUY for {symbol.name}.")
 
-        # --- [RISK MANAGEMENT] ---
-        # This is where we implement the "Total Risk Budget" model.
-        # For now, we'll keep it simple with a fixed order amount.
-        # TODO: Implement dynamic order size calculation based on risk.
-        order_amount = 0.001  # Example: buy 0.001 BTC on testnet
-
-        # --- [EXECUTION] ---
-        # 1. Place the market buy order
-        entry_order = await self.order_executor.create_market_order(symbol.name, 'buy', order_amount)
-        if not entry_order:
-            print(f"  > FAILED to place entry order for {symbol.name}. Aborting.")
+        current_open_positions = db.query(func.count(Position.id)).filter(Position.is_open == True).scalar()
+        if current_open_positions >= settings.MAX_OPEN_POSITIONS:
+            print(f"  > Risk Check FAILED: At max open positions ({settings.MAX_OPEN_POSITIONS}).")
             return
 
-        # 2. Place the stop loss order
-        sl_price = strategy_result['risk_management']['suggested_sl']
-        sl_order = await self.order_executor.create_stop_loss_order(symbol.name, 'sell', order_amount, sl_price)
+        balance = await self.order_executor.get_balance('USDT')
+        if balance <= 0:
+            print("  > Risk Check FAILED: Insufficient balance.")
+            return
+
+        risk_amount_per_trade = balance * settings.RISK_PER_TRADE_PERCENT
+        stop_loss_price = strategy_result['risk_management']['suggested_sl']
+        current_price = strategy_result['current_price']
+
+        if not stop_loss_price or stop_loss_price >= current_price:
+            print(f"  > Risk Check FAILED: Invalid stop loss price ({stop_loss_price}).")
+            return
+
+        risk_per_share = current_price - stop_loss_price
+        if risk_per_share <= 0:
+            print(f"  > Risk Check FAILED: Risk per share is zero or negative.")
+            return
+        order_amount = round(risk_amount_per_trade / risk_per_share, 3)
+
+        print(
+            f"  > Order Calc: Balance={balance:.2f}, Risk Amount={risk_amount_per_trade:.2f}, Order Size={order_amount}")
+
+        if order_amount <= 0:
+            print("  > Risk Check FAILED: Calculated order amount is zero.")
+            return
+
+        await self.order_executor.set_leverage(symbol.name, settings.LEVERAGE)
+        entry_order = await self.order_executor.create_market_order(symbol.name, 'buy', order_amount)
+        if not entry_order: return
+
+        sl_order = await self.order_executor.create_stop_loss_order(symbol.name, 'sell', order_amount, stop_loss_price)
         if not sl_order:
-            print(f"  > CRITICAL: FAILED to place stop loss. Attempting to close position for safety.")
+            print(f"  > CRITICAL: FAILED to place SL. Closing position for safety.")
             await self.order_executor.close_market_position(symbol.name, 'LONG', order_amount)
             return
 
-        # 3. [PERSISTENCE] Save the new position to the database
         new_position = Position(
-            symbol_id=symbol.id,
-            is_open=True,
-            position_side='LONG',
-            entry_price=entry_order.get('price') or strategy_result['current_price'],
-            quantity=entry_order['amount'],
-            entry_order_id=entry_order['id'],
-            stop_loss_order_id=sl_order['id'],
-            initial_stop_loss_price=sl_price
+            symbol_id=symbol.id, is_open=True, position_side='LONG',
+            entry_price=entry_order.get('price') or current_price,
+            quantity=entry_order['amount'], entry_order_id=str(entry_order['id']),
+            stop_loss_order_id=str(sl_order['id']), initial_stop_loss_price=stop_loss_price
         )
         db.add(new_position)
         db.commit()
@@ -80,17 +98,20 @@ class TradingService:
 
     async def _handle_exit_logic(self, db: Session, symbol: Symbol, position: Position,
                                  strategy_result: Dict[str, Any]):
-        """Handles the logic for monitoring and closing an open position."""
-        # The exit signal is the trend reversal (death cross)
-        # This logic is now inside the strategy, we just need to check the result.
-        # For simplicity, we assume the strategy would return an 'EXIT_SIGNAL' if conditions are met.
-        # This part needs to be built out in the MultiIndicatorStrategy.
-        # For now, we'll simulate it.
+        print(f"  > TradingService: Received EXIT_LONG signal for {symbol.name}. Closing position.")
 
-        # A real implementation would get the exit signal from strategy_result
-        # if strategy_result.get("overall_signal") == "EXIT_LONG":
-        #    ... close position ...
+        # 1. Close the position with a market order
+        close_order = await self.order_executor.close_market_position(
+            symbol.name, 'LONG', float(position.quantity)
+        )
+        if not close_order:
+            print(f"  > CRITICAL: FAILED to close position for {symbol.name}. Manual intervention required!")
+            return
 
-        print(f"  > TradingService: Monitoring open position for {symbol.name}. No exit signal found in this cycle.")
-        # [TODO] Add the full exit logic here, which would mirror the backtest's exit conditions.
-        pass
+        # 2. Cancel the now-redundant stop loss order
+        await self.order_executor.cancel_order(position.stop_loss_order_id, symbol.name)
+
+        # 3. Update the position status in the database
+        position.is_open = False
+        db.commit()
+        print(f"  > TradingService: Successfully closed and updated position for {symbol.name}.")

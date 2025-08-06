@@ -6,29 +6,34 @@ from .services.parameter_manager import ParameterManager
 from .services.order_executor import OrderExecutor
 from .services.analysis_service import AnalysisService
 from .services.data_updater import DataUpdaterService
+from .services.trading_service import TradingService
 
 
 class Container:
     """
-    A simple, centralized container for creating and holding service instances.
-    This implements the Dependency Injection pattern.
+    The central place for creating and wiring up all service instances.
     """
 
     def __init__(self):
         # 1. Create leaf-level services
         self.param_manager = ParameterManager()
         self.llm_strategy = get_llm_strategy(settings)
-        # IMPORTANT: For real trading, is_testnet should be False
         self.order_executor = OrderExecutor(is_testnet=True)
         self.data_updater = DataUpdaterService()
 
-        # 2. Create high-level services and "inject" their dependencies
+        # 2. Create the TradingService, injecting its dependencies
+        self.trading_service = TradingService(
+            order_executor=self.order_executor,
+            param_manager=self.param_manager
+        )
+
+        # 3. Create the AnalysisService, injecting the TradingService
         self.analysis_service = AnalysisService(
             param_manager=self.param_manager,
-            order_executor=self.order_executor,
+            trading_service=self.trading_service,  # <-- Injection
             llm_strategy=self.llm_strategy
         )
 
 
-# Create a single, application-wide container instance
+# Create the single, application-wide container instance
 container = Container()

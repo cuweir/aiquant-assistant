@@ -36,6 +36,19 @@ class Settings:
         "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
     ]
 
+    # Set to False to connect to the LIVE Binance Futures market
+    IS_TESTNET: bool = True
+
+    # The percentage of the total futures account balance to risk on a single trade.
+    # e.g., 0.02 means 2% of the total balance.
+    RISK_PER_TRADE_PERCENT: float = 0.2  # Default to a safe 2%
+
+    # The default leverage to apply to all trades.
+    LEVERAGE: int = 20  # Default to 10x
+
+    # The maximum number of positions the bot is allowed to hold open simultaneously.
+    MAX_OPEN_POSITIONS: int = 3  # Default to a max of 3 concurrent positions
+
     # --- Trend Filter Parameters ---
     TREND_FILTER_PERIOD_SHORT: int = 50  # e.g., use 50-EMA on the 1h chart
     TREND_FILTER_PERIOD_LONG: int = 50  # e.g., use 50-EMA on the 4h chart
