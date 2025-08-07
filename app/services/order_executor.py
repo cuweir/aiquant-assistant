@@ -116,7 +116,14 @@ class OrderExecutor:
             print(
                 f"  > Calculated amount: {amount_in_coin} -> Formatted to: {formatted_amount} at price {current_price}")
 
-            order = await self.exchange.create_market_order(symbol, side, float(formatted_amount))
+            # Add position side parameter for futures trading
+            params = {}
+            if side == 'buy':
+                params['positionSide'] = 'LONG'
+            elif side == 'sell':
+                params['positionSide'] = 'SHORT'
+
+            order = await self.exchange.create_market_order(symbol, side, float(formatted_amount), params=params)
             print(f"  > Market order created successfully. Order ID: {order['id']}")
             return order
         except Exception as e:
@@ -128,8 +135,41 @@ class OrderExecutor:
         await self.initialize()
         try:
             print(f"Creating stop loss {side} order for {amount:.8f} {symbol} at price {stop_price}...")
-            params = {'stopPrice': stop_price, 'reduceOnly': True}
-            order = await self.exchange.create_order(symbol, 'STOP_MARKET', side, amount, params=params)
+
+            # Try different parameter combinations for compatibility
+            params_options = [
+                # Option 1: Basic stop loss with position side
+                {
+                    'stopPrice': stop_price,
+                    'positionSide': 'LONG' if side == 'sell' else 'SHORT',
+                    'timeInForce': 'GTC'
+                },
+                # Option 2: Basic stop loss with reduceOnly
+                {
+                    'stopPrice': stop_price,
+                    'reduceOnly': True,
+                    'timeInForce': 'GTC'
+                },
+                # Option 3: Minimal parameters
+                {
+                    'stopPrice': stop_price
+                }
+            ]
+
+            order = None
+            for i, params in enumerate(params_options):
+                try:
+                    print(f"  > Trying stop loss option {i+1}...")
+                    order = await self.exchange.create_order(symbol, 'STOP_MARKET', side, amount, params=params)
+                    print(f"  > Stop loss created successfully with option {i+1}")
+                    break
+                except Exception as e:
+                    print(f"  > Option {i+1} failed: {e}")
+                    if i == len(params_options) - 1:  # Last option
+                        raise e
+
+            if not order:
+                raise Exception("All stop loss parameter combinations failed")
             print(f"  > Stop loss order created successfully. Order ID: {order['id']}")
             return order
         except Exception as e:
@@ -168,8 +208,31 @@ class OrderExecutor:
         close_side: Literal['buy', 'sell'] = 'sell' if position_side.upper() == 'LONG' else 'buy'
         try:
             print(f"Closing {position_side} position for {quantity:.8f} {symbol} with a market order...")
-            params = {'reduceOnly': True}
-            order = await self.exchange.create_market_order(symbol, close_side, quantity, params=params)
+
+            # Try different parameter combinations for closing position
+            params_options = [
+                # Option 1: With position side (for hedge mode)
+                {'positionSide': position_side.upper()},
+                # Option 2: With reduceOnly (for one-way mode)
+                {'reduceOnly': True},
+                # Option 3: No special parameters
+                {}
+            ]
+
+            order = None
+            for i, params in enumerate(params_options):
+                try:
+                    print(f"  > Trying close position option {i+1}...")
+                    order = await self.exchange.create_market_order(symbol, close_side, quantity, params=params)
+                    print(f"  > Position closed successfully with option {i+1}")
+                    break
+                except Exception as e:
+                    print(f"  > Option {i+1} failed: {e}")
+                    if i == len(params_options) - 1:  # Last option
+                        raise e
+
+            if not order:
+                raise Exception("All close position parameter combinations failed")
             print(f"  > Position closing order created successfully. Order ID: {order['id']}")
             return order
         except Exception as e:

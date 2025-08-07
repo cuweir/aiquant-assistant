@@ -46,10 +46,10 @@ class Settings:
     RISK_PER_TRADE_PERCENT: float = 0.2  # Default to a safe 2%
 
     # The default leverage to apply to all trades.
-    LEVERAGE: int = 20  # Default to 10x
+    LEVERAGE: int = 3  # 3x leverage for live testing (much safer)
 
     # The maximum number of positions the bot is allowed to hold open simultaneously.
-    MAX_OPEN_POSITIONS: int = 4  # Default to a max of 3 concurrent positions
+    MAX_OPEN_POSITIONS: int = 3  # Default to a max of 3 concurrent positions
 
     # --- Trend Filter Parameters ---
     TREND_FILTER_PERIOD_SHORT: int = 50  # e.g., use 50-EMA on the 1h chart

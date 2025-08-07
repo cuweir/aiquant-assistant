@@ -58,31 +58,51 @@ class MultiIndicatorStrategy(TradingStrategy):
         """
         Calculates all necessary indicators after cleaning the data.
         """
+        print(f"  > Data before cleaning: signal={len(df_signal)}, regime={len(df_regime)}")
+
         # [CRITICAL FIX] Apply data cleaning before any calculations
         df_signal = self._clean_data(df_signal.copy())
         df_regime = self._clean_data(df_regime.copy())
 
+        print(f"  > Data after cleaning: signal={len(df_signal)}, regime={len(df_regime)}")
+        print(f"  > Required: signal>={self.p['low_vol_ma_long']}, regime>={self.p['regime_ma_period']}")
+
         # Check if data is still sufficient after cleaning
         if len(df_signal) < self.p['low_vol_ma_long'] or len(df_regime) < self.p['regime_ma_period']:
+            print(f"  > INSUFFICIENT DATA after cleaning: signal={len(df_signal)}<{self.p['low_vol_ma_long']} or regime={len(df_regime)}<{self.p['regime_ma_period']}")
             return {}  # Return empty dict if not enough data
 
         indicators = {}
+        print(f"  > Starting indicator calculations...")
 
         # [CRITICAL FIX] Call ta methods on the DataFrame, not the Series.
 
         # Regime Filter
-        indicators['regime_ma'] = df_regime.ta.sma(length=self.p['regime_ma_period'])
+        try:
+            indicators['regime_ma'] = df_regime.ta.sma(length=self.p['regime_ma_period'])
+            print(f"  > regime_ma calculated: {len(indicators['regime_ma'])} values")
+        except Exception as e:
+            print(f"  > Error calculating regime_ma: {e}")
+            return {}
 
         # Volatility Regime
-        # .ta.atr() returns a Series.
-        vol_atr = df_signal.ta.atr(length=self.p['vol_atr_period'], append=False)
-        if vol_atr is not None and not vol_atr.empty:
-            indicators['vol_atr'] = vol_atr
-            # To calculate the SMA of the ATR, we add it to the original DataFrame temporarily.
-            df_with_atr = df_signal.copy()
-            df_with_atr['atr'] = vol_atr
-            # Now we can call .ta.sma() on the DataFrame, specifying the 'atr' column.
-            indicators['vol_atr_ma'] = df_with_atr.ta.sma(close='atr', length=self.p['vol_atr_ma_period'])
+        try:
+            # .ta.atr() returns a Series.
+            vol_atr = df_signal.ta.atr(length=self.p['vol_atr_period'], append=False)
+            if vol_atr is not None and not vol_atr.empty:
+                indicators['vol_atr'] = vol_atr
+                print(f"  > vol_atr calculated: {len(vol_atr)} values")
+                # To calculate the SMA of the ATR, we add it to the original DataFrame temporarily.
+                df_with_atr = df_signal.copy()
+                df_with_atr['atr'] = vol_atr
+                # Now we can call .ta.sma() on the DataFrame, specifying the 'atr' column.
+                indicators['vol_atr_ma'] = df_with_atr.ta.sma(close='atr', length=self.p['vol_atr_ma_period'])
+                print(f"  > vol_atr_ma calculated: {len(indicators['vol_atr_ma'])} values")
+            else:
+                print(f"  > vol_atr calculation failed or empty")
+        except Exception as e:
+            print(f"  > Error calculating vol_atr: {e}")
+            return {}
 
         # Low Volatility Indicators
         indicators['low_vol_ma_short'] = df_signal.ta.sma(length=self.p['low_vol_ma_short'])
@@ -114,9 +134,28 @@ class MultiIndicatorStrategy(TradingStrategy):
         indicators = self._calculate_indicators(df_signal, df_regime)
         if not indicators:
             return {"overall_signal": "INSUFFICIENT_CLEAN_DATA", "current_price": df_signal['close'].iloc[-1]}
+
+        print(f"  > Indicators calculated: {list(indicators.keys())}")
+
+        # Check for NaN values in the last few values of each indicator
+        for name, series in indicators.items():
+            if len(series) >= 2:
+                last_val = series.iloc[-1]
+                prev_val = series.iloc[-2]
+                print(f"  > {name}: last={last_val}, prev={prev_val}, last_is_nan={pd.isna(last_val)}, prev_is_nan={pd.isna(prev_val)}")
+            else:
+                print(f"  > {name}: insufficient data (length={len(series)})")
+
         latest = {name: series.iloc[-1] for name, series in indicators.items() if pd.notna(series.iloc[-1])}
         previous = {name: series.iloc[-2] for name, series in indicators.items() if pd.notna(series.iloc[-2])}
         latest_close = df_signal['close'].iloc[-1]
+
+        print(f"  > Latest values: {list(latest.keys())}")
+        print(f"  > Previous values: {list(previous.keys())}")
+
+        if not latest:
+            print(f"  > ERROR: No valid latest values found!")
+            return {"overall_signal": "NO_VALID_INDICATORS", "current_price": latest_close}
 
         snapshot = {
             "price": latest_close,
@@ -128,10 +167,14 @@ class MultiIndicatorStrategy(TradingStrategy):
             "components": {}  # To be filled below
         }
 
+        print(f"  > Current regime price: {df_regime['close'].iloc[-1]}")
+        print(f"  > Regime MA: {latest.get('regime_ma')}")
+        print(f"  > Is bull regime: {snapshot['is_bull_regime']}")
+
         # --- Strategy Logic ---
         is_bull_regime = snapshot["is_bull_regime"]
         if not is_bull_regime:
-            return {"overall_signal": "REGIME_FILTER_BEARISH", "total_score": 0, "current_price": latest_close}
+            return {"overall_signal": "REGIME_FILTER_BEARISH", "total_score": 0, "current_price": latest_close, "snapshot": snapshot}
 
         is_high_vol = snapshot["is_high_vol"]
         if is_high_vol:
@@ -146,7 +189,25 @@ class MultiIndicatorStrategy(TradingStrategy):
             )
 
         # --- Exit Signal Check ---
+        print(f"  > MA Short: {ma_short}, MA Long: {ma_long}")
+        print(f"  > Exit signal check: ma_short < ma_long = {ma_short < ma_long}")
+
         if ma_short < ma_long:
+            print(f"  > EXIT SIGNAL triggered - but still filling components for analysis")
+            # Fill components even for exit signals to provide complete analysis
+            snapshot['components']['trend'] = {
+                "value": f"MA({self.p['low_vol_ma_short'] if not is_high_vol else self.p['high_vol_ma_short']}) > MA({self.p['low_vol_ma_long'] if not is_high_vol else self.p['high_vol_ma_long']})",
+                "result": False, "score": 0}
+
+            # Add other components for completeness
+            c2_momentum = previous.get('macd', 0) < previous.get('macd_signal', 0) and latest.get('macd', 0) > latest.get('macd_signal', 0)
+            snapshot['components']['momentum'] = {"value": f"MACD Cross Up", "result": c2_momentum, "score": 2 if c2_momentum else 0}
+
+            c3_pullback = previous.get('rsi', 0) < self.p['rsi_oversold'] and latest.get('rsi', 0) > self.p['rsi_oversold']
+            snapshot['components']['pullback'] = {"value": f"RSI Cross Up {self.p['rsi_oversold']}", "result": c3_pullback, "score": 1 if c3_pullback else 0}
+
+            snapshot['total_score'] = 0  # Exit signal overrides any positive score
+
             return {
                 "overall_signal": "NEUTRAL",
                 "exit_signal": "EXIT_LONG",
