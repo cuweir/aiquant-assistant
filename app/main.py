@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .core.lifespan import lifespan
 from .core.config import settings
-from .api.endpoints import analysis, backtest
+from .api.endpoints import analysis, backtest, system
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -33,6 +33,8 @@ app.add_middleware(
 # Include the API router
 app.include_router(analysis.router, prefix="/api/v1", tags=["Analysis"])
 app.include_router(backtest.router, prefix="/api/v1/backtest", tags=["Backtesting"])
+app.include_router(system.router, prefix="/api/v1/system", tags=["System Diagnostics"])
+
 
 @app.get("/", tags=["Root"])
 async def read_root():

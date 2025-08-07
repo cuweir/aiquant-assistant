@@ -1,7 +1,9 @@
 # app/services/order_executor.py
 
-import ccxt.async_support as ccxt
-from typing import Dict, Any
+import ccxt
+import ccxt.async_support as ccxt_async
+import math
+from typing import Dict, Any, Literal
 
 from ..core.config import settings
 
@@ -21,6 +23,7 @@ class OrderExecutor:
                         Otherwise, connects to the live market.
         """
         self.is_testnet = is_testnet
+        self.current_leverage = {}  # Store leverage for each symbol
 
         api_key = settings.BINANCE_FUTURES_TESTNET_API_KEY if is_testnet else settings.BINANCE_API_KEY
         secret = settings.BINANCE_FUTURES_TESTNET_API_SECRET if is_testnet else settings.BINANCE_API_SECRET
@@ -28,7 +31,7 @@ class OrderExecutor:
         if not api_key or not secret:
             raise ValueError(f"Binance Futures {'Testnet' if is_testnet else 'Live'} API keys are not set.")
 
-        self.exchange = ccxt.binance({
+        self.exchange = ccxt_async.binance({
             'apiKey': api_key,
             'secret': secret,
             'options': {
@@ -79,6 +82,8 @@ class OrderExecutor:
         try:
             print(f"Setting leverage for {symbol} to {leverage}x...")
             await self.exchange.set_leverage(leverage, symbol)
+            # Store the leverage for later use
+            self.current_leverage[symbol] = leverage
             print(f"  > Leverage for {symbol} set to {leverage}x successfully.")
             return True
         except Exception as e:
@@ -104,6 +109,97 @@ class OrderExecutor:
             return order
         except Exception as e:
             print(f"Error creating market order for {symbol}: {e}")
+            return None
+
+    async def create_market_order_by_cost(self, symbol: str, side: str, cost: float) -> Dict[str, Any] | None:
+        """
+        Places a market order based on the desired cost in USDT.
+        This is the preferred method for futures trading.
+
+        Args:
+            symbol: The trading symbol (e.g., 'BTC/USDT').
+            side: 'buy' for long, 'sell' for short.
+            cost: The amount of USDT to spend on the position (e.g., 100.0 for 100 USDT).
+
+        Returns:
+            The order object from the exchange if successful, None otherwise.
+        """
+        try:
+            print(f"Creating market {side} order for {symbol} with a cost of {cost:.2f} USDT...")
+            # CCXT abstracts this, we still pass amount, but it needs to be calculated first.
+            # Let's fetch the price to convert cost to amount.
+            ticker = await self.exchange.fetch_ticker(symbol)
+            current_price = ticker['last']
+            if current_price <= 0:
+                raise ValueError("Invalid current price for cost calculation.")
+
+            amount = cost / current_price
+
+            # Now, we use the standard create_market_order with the calculated amount
+            order = await self.exchange.create_market_order(symbol, side, amount)
+            print(f"  > Market order created successfully. Order ID: {order['id']}")
+            return order
+        except Exception as e:
+            print(f"Error creating market order by cost for {symbol}: {e}")
+            return None
+
+    async def create_market_order_by_quote_quantity(self, symbol: str, side: Literal['buy', 'sell'], quote_quantity: float) -> Dict[
+                                                                                                                str, Any] | None:
+        """
+        Places a market order based on the desired margin amount (USDT).
+        For futures trading, this calculates the notional value based on current leverage.
+
+        Args:
+            quote_quantity: The amount of USDT margin to use (not notional value)
+        """
+        try:
+            # Get current leverage for this symbol
+            current_leverage = self.current_leverage.get(symbol, 5)  # Default to 5x if not set
+
+            # Calculate notional value: margin * leverage
+            notional_value = quote_quantity * current_leverage
+
+            print(f"Creating market {side} order for {symbol}...")
+            print(f"  > Margin to use: {quote_quantity:.2f} USDT")
+            print(f"  > Leverage: {current_leverage}x")
+            print(f"  > Notional value: {notional_value:.2f} USDT")
+
+            # For Binance futures, quoteOrderQty represents the notional value
+            params = {'quoteOrderQty': notional_value}
+
+            # Calculate a proper placeholder amount based on current price
+            # This ensures we meet minimum quantity requirements
+            ticker = await self.exchange.fetch_ticker(symbol)
+            current_price = ticker['last']
+            if not current_price or current_price <= 0:
+                raise ValueError(f"Invalid current price ({current_price}) for {symbol}")
+
+            # Calculate the actual amount needed for the notional value
+            calculated_amount = notional_value / current_price
+
+            # Use the calculated amount as placeholder (it will be overridden by quoteOrderQty)
+            placeholder_amount = self.exchange.amount_to_precision(symbol, calculated_amount)
+
+            print(f"  > Calculated amount: {calculated_amount:.6f} {symbol.split('/')[0]}")
+            print(f"  > Placeholder amount: {placeholder_amount} {symbol.split('/')[0]}")
+
+            order = await self.exchange.create_market_order(
+                symbol,
+                side,
+                amount=placeholder_amount,
+                params=params
+            )
+            print(f"  > Futures order created successfully. Order ID: {order['id']}")
+            print(f"  > Contract amount: {order.get('filled', 'N/A')} {symbol.split('/')[0]}")
+            print(f"  > Notional value: {order.get('cost', notional_value)} USDT")
+            print(f"  > Margin used: ~{quote_quantity:.2f} USDT")
+            return order
+        except Exception as e:
+            print(f"Error creating market order by quote quantity for {symbol}: {e}")
+            print(f"  > Full error details: {str(e)}")
+            # Try to extract more details from the error
+            if hasattr(e, 'response'):
+                print(f"  > Response: {e.response}")
             return None
 
     async def create_stop_loss_order(self, symbol: str, side: str, amount: float, stop_price: float) -> Dict[
@@ -169,7 +265,7 @@ class OrderExecutor:
             await self.exchange.cancel_order(order_id, symbol)
             print(f"  > Order {order_id} cancelled successfully.")
             return True
-        except ccxt.OrderNotFound:
+        except ccxt_async.OrderNotFound:
             # This is not an error, it just means the order was already filled or cancelled.
             print(f"  > Order {order_id} not found. It might have been already filled/cancelled.")
             return True

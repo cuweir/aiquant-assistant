@@ -51,23 +51,26 @@ class MultiIndicatorStrategy(TradingStrategy):
         indicators = {}
 
         # Regime Filter
-        indicators['regime_ma'] = df_regime['close'].ta.sma(length=self.p['regime_ma_period'])
+        indicators['regime_ma'] = df_regime.ta.sma(length=self.p['regime_ma_period'])
 
         # Volatility Regime
-        vol_atr = df_signal.ta.atr(length=self.p['vol_atr_period'], append=True)
-        indicators['vol_atr'] = vol_atr
-        indicators['vol_atr_ma'] = vol_atr.ta.sma(length=self.p['vol_atr_ma_period'])
+        # .ta.atr() returns a DataFrame, so we select the column
+        vol_atr_df = df_signal.ta.atr(length=self.p['vol_atr_period'], append=False)
+        if vol_atr_df is not None and not vol_atr_df.empty:
+            vol_atr = vol_atr_df.iloc[:, 0]  # Get the first column which is the ATR value
+            indicators['vol_atr'] = vol_atr
+            indicators['vol_atr_ma'] = vol_atr.ta.sma(length=self.p['vol_atr_ma_period'])
 
         # Low Volatility Indicators
-        indicators['low_vol_ma_short'] = df_signal['close'].ta.sma(length=self.p['low_vol_ma_short'])
-        indicators['low_vol_ma_long'] = df_signal['close'].ta.sma(length=self.p['low_vol_ma_long'])
+        indicators['low_vol_ma_short'] = df_signal.ta.sma(length=self.p['low_vol_ma_short'])
+        indicators['low_vol_ma_long'] = df_signal.ta.sma(length=self.p['low_vol_ma_long'])
         adx_low = df_signal.ta.adx(length=self.p['adx_period'])
         if adx_low is not None and not adx_low.empty:
             indicators['low_vol_adx'] = adx_low[f'ADX_{self.p["adx_period"]}']
 
         # High Volatility Indicators
-        indicators['high_vol_ma_short'] = df_signal['close'].ta.sma(length=self.p['high_vol_ma_short'])
-        indicators['high_vol_ma_long'] = df_signal['close'].ta.sma(length=self.p['high_vol_ma_long'])
+        indicators['high_vol_ma_short'] = df_signal.ta.sma(length=self.p['high_vol_ma_short'])
+        indicators['high_vol_ma_long'] = df_signal.ta.sma(length=self.p['high_vol_ma_long'])
         adx_high = df_signal.ta.adx(length=self.p['adx_period'])
         if adx_high is not None and not adx_high.empty:
             indicators['high_vol_adx'] = adx_high[f'ADX_{self.p["adx_period"]}']

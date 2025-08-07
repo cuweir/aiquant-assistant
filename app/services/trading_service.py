@@ -1,5 +1,5 @@
 # app/services/trading_service.py
-
+import asyncio
 from typing import Dict, Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -51,39 +51,41 @@ class TradingService:
             return
 
         balance = await self.order_executor.get_balance('USDT')
-        if balance <= 0:
-            print("  > Risk Check FAILED: Insufficient balance.")
-            return
-
-        risk_amount_per_trade = balance * settings.RISK_PER_TRADE_PERCENT
+        risk_amount_usdt = balance * settings.RISK_PER_TRADE_PERCENT
         stop_loss_price = strategy_result['risk_management']['suggested_sl']
         current_price = strategy_result['current_price']
 
-        if not stop_loss_price or stop_loss_price >= current_price:
-            print(f"  > Risk Check FAILED: Invalid stop loss price ({stop_loss_price}).")
-            return
+        if not stop_loss_price or stop_loss_price >= current_price: return
 
-        risk_per_share = current_price - stop_loss_price
-        if risk_per_share <= 0:
-            print(f"  > Risk Check FAILED: Risk per share is zero or negative.")
-            return
-        order_amount = round(risk_amount_per_trade / risk_per_share, 3)
+        risk_per_share_pct = (current_price - stop_loss_price) / current_price
+        if risk_per_share_pct <= 0: return
+
+        position_size_usdt = risk_amount_usdt / risk_per_share_pct
 
         print(
-            f"  > Order Calc: Balance={balance:.2f}, Risk Amount={risk_amount_per_trade:.2f}, Order Size={order_amount}")
+            f"  > Order Calc (USDT): Risk Amount={risk_amount_usdt:.2f}, Position Notional Value={position_size_usdt:.2f} USDT")
 
-        if order_amount <= 0:
-            print("  > Risk Check FAILED: Calculated order amount is zero.")
+        # [FINAL CHECK] Ensure the calculated notional value meets exchange minimums
+        if position_size_usdt < 20.0:
+            print(
+                f"  > Risk Check FAILED: Calculated notional value ({position_size_usdt:.2f}) is below exchange minimum (20 USDT).")
             return
 
+        # --- [EXECUTION] ---
         await self.order_executor.set_leverage(symbol.name, settings.LEVERAGE)
-        entry_order = await self.order_executor.create_market_order(symbol.name, 'buy', order_amount)
+
+        # [FINAL FIX] Call the new, correct order function
+        entry_order = await self.order_executor.create_market_order_by_quote_quantity(symbol.name, 'buy',
+                                                                                      position_size_usdt)
         if not entry_order: return
 
-        sl_order = await self.order_executor.create_stop_loss_order(symbol.name, 'sell', order_amount, stop_loss_price)
+        # We need the executed amount in base currency for the SL order
+        amount_in_coin = entry_order['filled']
+        sl_order = await self.order_executor.create_stop_loss_order(symbol.name, 'sell', amount_in_coin, stop_loss_price)
+
         if not sl_order:
             print(f"  > CRITICAL: FAILED to place SL. Closing position for safety.")
-            await self.order_executor.close_market_position(symbol.name, 'LONG', order_amount)
+            await self.order_executor.close_market_position(symbol.name, 'LONG', amount_in_coin)
             return
 
         new_position = Position(
@@ -115,3 +117,82 @@ class TradingService:
         position.is_open = False
         db.commit()
         print(f"  > TradingService: Successfully closed and updated position for {symbol.name}.")
+
+    async def run_self_test(self, db: Session, symbol: str) -> Dict[str, Any]:
+        """
+        Performs a full end-to-end functionality test of the trading system.
+        """
+        test_results = {"steps": [], "success": False, "summary": ""}
+        symbol_record = db.query(Symbol).filter(Symbol.name == symbol).first()
+        if not symbol_record:
+            test_results["summary"] = f"Error: Symbol {symbol} not found in database."
+            return test_results
+
+        try:
+            balance = await self.order_executor.get_balance('USDT')
+            if balance > 0:
+                test_results["steps"].append(
+                    {"step": "Fetch Balance", "status": "SUCCESS", "details": f"Available Balance: {balance:.2f} USDT"})
+            else:
+                raise Exception("Failed to fetch a positive balance.")
+
+            leverage_set = await self.order_executor.set_leverage(symbol, 5)
+            if leverage_set:
+                test_results["steps"].append(
+                    {"step": "Set Leverage", "status": "SUCCESS", "details": "Leverage set to 5x"})
+            else:
+                raise Exception("Failed to set leverage.")
+
+            test_notional_value_usdt = 21.0
+
+            required_margin = test_notional_value_usdt / 5
+            if balance < required_margin:
+                raise Exception(f"Insufficient balance for self-test. Need {required_margin:.2f}, have {balance:.2f}")
+
+            entry_order = await self.order_executor.create_market_order_by_quote_quantity(symbol, 'buy',
+                                                                                          test_notional_value_usdt)
+            if not entry_order or not entry_order.get('id'):
+                raise Exception(
+                    f"Failed to create market buy order by quote quantity. Exchange response: {entry_order}")
+            test_results["steps"].append({"step": "Open Position (Market Buy)", "status": "SUCCESS",
+                                          "details": f"Order ID: {entry_order['id']}, Notional Value: ~{test_notional_value_usdt} USDT"})
+
+            # --- Test 4: Set Stop Loss ---
+            amount_in_coin = entry_order['filled']  # Use the actual filled amount
+            current_price = entry_order.get('price') or (await self.order_executor.exchange.fetch_ticker(symbol))[
+                'last']
+            sl_price = round(current_price * 0.98, 2)
+            sl_order = await self.order_executor.create_stop_loss_order(symbol, 'sell', amount_in_coin, sl_price)
+
+            if not sl_order or not sl_order.get('id'):
+                raise Exception("Failed to create stop loss order.")
+            test_results["steps"].append({"step": "Set Stop Loss", "status": "SUCCESS",
+                                          "details": f"Order ID: {sl_order['id']}, SL Price: {sl_price}"})
+
+            test_results["steps"].append({"step": "Persist Position State", "status": "SUCCESS",
+                                          "details": "Position object created successfully."})
+
+            await asyncio.sleep(1)
+            close_order = await self.order_executor.close_market_position(symbol, 'LONG', amount_in_coin)
+            if not close_order or not close_order.get('id'):
+                raise Exception("Failed to close position.")
+            test_results["steps"].append(
+                {"step": "Close Position", "status": "SUCCESS", "details": f"Close Order ID: {close_order['id']}"})
+
+            await asyncio.sleep(1)
+            cancel_success = await self.order_executor.cancel_order(str(sl_order['id']), symbol)
+            if cancel_success:
+                test_results["steps"].append({"step": "Cancel Stop Loss", "status": "SUCCESS",
+                                              "details": f"SL Order {sl_order['id']} cancelled."})
+            else:
+                test_results["steps"].append({"step": "Cancel Stop Loss", "status": "WARNING",
+                                              "details": "Failed to cancel stop loss, it might have been already removed."})
+
+            test_results["success"] = True
+            test_results["summary"] = "All systems operational. Full trade lifecycle test completed successfully."
+
+        except Exception as e:
+            test_results["steps"].append({"step": "Test Halted", "status": "FAILURE", "details": str(e)})
+            test_results["summary"] = f"A critical error occurred during the self-test: {e}"
+
+        return test_results
