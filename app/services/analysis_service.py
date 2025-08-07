@@ -1,3 +1,5 @@
+import json
+
 import pandas as pd
 from typing import Dict, Any, List
 from sqlalchemy.orm import Session, joinedload
@@ -106,21 +108,20 @@ class AnalysisService:
             df_regime = fetch_df_from_postgres(symbol_name, settings.TREND_TIMEFRAME_SHORT, start_date, end_date)
             if df_signal is None or df_regime is None: return
 
-            # 1. Generate the raw signal
             strategy_result = await trading_strategy.generate_signals(df_signal, df_regime)
             if not strategy_result: return
 
-            print(f"  > AnalysisService: Generated signal for {symbol_name}: {strategy_result.get('overall_signal')}")
+            # [LOGGING ENHANCEMENT] Print the detailed strategy snapshot
+            snapshot = strategy_result.get("snapshot", {})
+            print(f"  > Strategy Snapshot for {symbol_name}:")
+            # Use json.dumps for pretty printing the nested dictionary
+            print(json.dumps(snapshot, indent=4, default=str))
 
-            # 2. [NEW] Pass the signal to the TradingService for a decision
+            # Pass the full report to the TradingService
             await self.trading_service.process_signal(db, symbol_record, strategy_result)
 
-            # 3. (Optional) LLM analysis and DB logging can still happen here if needed,
-            # for example, to log every signal generated, regardless of execution.
-            # For now, we keep it simple.
-
         except Exception as e:
-            print(f"  > An unexpected error occurred during analysis for {symbol_name}: {e}")
+            print(f"  > An unexpected error during analysis for {symbol_name}: {e}")
             import traceback
             traceback.print_exc()
         finally:

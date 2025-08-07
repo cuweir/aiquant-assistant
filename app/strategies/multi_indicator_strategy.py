@@ -44,29 +44,52 @@ class MultiIndicatorStrategy(TradingStrategy):
         self.p.setdefault('macd_signal', 9)
         self.p.setdefault('adx_period', 14)
 
+    def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        [NEW] A robust data cleaning pre-processing step.
+        """
+        # Forward-fill any missing values. This is a common practice for time-series data.
+        df.ffill(inplace=True)
+        # Drop any remaining NaN rows that might exist at the beginning of the series
+        df.dropna(inplace=True)
+        return df
+
     def _calculate_indicators(self, df_signal: pd.DataFrame, df_regime: pd.DataFrame) -> Dict[str, pd.Series]:
         """
-        Calculates all necessary indicators using pandas_ta.
+        Calculates all necessary indicators after cleaning the data.
         """
+        # [CRITICAL FIX] Apply data cleaning before any calculations
+        df_signal = self._clean_data(df_signal.copy())
+        df_regime = self._clean_data(df_regime.copy())
+
+        # Check if data is still sufficient after cleaning
+        if len(df_signal) < self.p['low_vol_ma_long'] or len(df_regime) < self.p['regime_ma_period']:
+            return {}  # Return empty dict if not enough data
+
         indicators = {}
+
+        # [CRITICAL FIX] Call ta methods on the DataFrame, not the Series.
 
         # Regime Filter
         indicators['regime_ma'] = df_regime.ta.sma(length=self.p['regime_ma_period'])
 
         # Volatility Regime
-        # .ta.atr() returns a DataFrame, so we select the column
-        vol_atr_df = df_signal.ta.atr(length=self.p['vol_atr_period'], append=False)
-        if vol_atr_df is not None and not vol_atr_df.empty:
-            vol_atr = vol_atr_df.iloc[:, 0]  # Get the first column which is the ATR value
+        # .ta.atr() returns a Series.
+        vol_atr = df_signal.ta.atr(length=self.p['vol_atr_period'], append=False)
+        if vol_atr is not None and not vol_atr.empty:
             indicators['vol_atr'] = vol_atr
-            indicators['vol_atr_ma'] = vol_atr.ta.sma(length=self.p['vol_atr_ma_period'])
+            # To calculate the SMA of the ATR, we add it to the original DataFrame temporarily.
+            df_with_atr = df_signal.copy()
+            df_with_atr['atr'] = vol_atr
+            # Now we can call .ta.sma() on the DataFrame, specifying the 'atr' column.
+            indicators['vol_atr_ma'] = df_with_atr.ta.sma(close='atr', length=self.p['vol_atr_ma_period'])
 
         # Low Volatility Indicators
         indicators['low_vol_ma_short'] = df_signal.ta.sma(length=self.p['low_vol_ma_short'])
         indicators['low_vol_ma_long'] = df_signal.ta.sma(length=self.p['low_vol_ma_long'])
         adx_low = df_signal.ta.adx(length=self.p['adx_period'])
         if adx_low is not None and not adx_low.empty:
-            indicators['low_vol_adx'] = adx_low[f'ADX_{self.p["adx_period"]}']
+             indicators['low_vol_adx'] = adx_low[f'ADX_{self.p["adx_period"]}']
 
         # High Volatility Indicators
         indicators['high_vol_ma_short'] = df_signal.ta.sma(length=self.p['high_vol_ma_short'])
@@ -80,35 +103,37 @@ class MultiIndicatorStrategy(TradingStrategy):
         macd_df = df_signal.ta.macd(fast=self.p['macd_fast'], slow=self.p['macd_slow'], signal=self.p['macd_signal'])
         if macd_df is not None and not macd_df.empty:
             indicators['macd'] = macd_df[f'MACD_{self.p["macd_fast"]}_{self.p["macd_slow"]}_{self.p["macd_signal"]}']
-            indicators['macd_signal'] = macd_df[
-                f'MACDs_{self.p["macd_fast"]}_{self.p["macd_slow"]}_{self.p["macd_signal"]}']
+            indicators['macd_signal'] = macd_df[f'MACDs_{self.p["macd_fast"]}_{self.p["macd_slow"]}_{self.p["macd_signal"]}']
 
         return indicators
 
     async def generate_signals(self, df_signal: pd.DataFrame, df_regime: pd.DataFrame) -> Dict[str, Any] | None:
-        """
-        Main analysis function, mirroring the V7 backtest logic completely.
-        """
         if len(df_signal) < self.p['low_vol_ma_long'] or len(df_regime) < self.p['regime_ma_period']:
-            return {"overall_signal": "INSUFFICIENT_DATA", "total_score": 0,
-                    "current_price": df_signal['close'].iloc[-1]}
+            return {"overall_signal": "INSUFFICIENT_DATA", "current_price": df_signal['close'].iloc[-1]}
 
         indicators = self._calculate_indicators(df_signal, df_regime)
-
-        # Get latest and previous values for signal evaluation
-        latest = {name: series.iloc[-1] for name, series in indicators.items()}
-        previous = {name: series.iloc[-2] for name, series in indicators.items()}
+        if not indicators:
+            return {"overall_signal": "INSUFFICIENT_CLEAN_DATA", "current_price": df_signal['close'].iloc[-1]}
+        latest = {name: series.iloc[-1] for name, series in indicators.items() if pd.notna(series.iloc[-1])}
+        previous = {name: series.iloc[-2] for name, series in indicators.items() if pd.notna(series.iloc[-2])}
         latest_close = df_signal['close'].iloc[-1]
 
-        # --- Strategy Logic ---
+        snapshot = {
+            "price": latest_close,
+            "regime_ma": latest.get('regime_ma'),
+            "is_bull_regime": df_regime['close'].iloc[-1] > latest.get('regime_ma', float('inf')),
+            "vol_atr": latest.get('vol_atr'),
+            "vol_atr_ma": latest.get('vol_atr_ma'),
+            "is_high_vol": latest.get('vol_atr', 0) > latest.get('vol_atr_ma', 0),
+            "components": {}  # To be filled below
+        }
 
-        # 1. Regime Filter
-        is_bull_regime = df_regime['close'].iloc[-1] > latest.get('regime_ma', float('inf'))
+        # --- Strategy Logic ---
+        is_bull_regime = snapshot["is_bull_regime"]
         if not is_bull_regime:
             return {"overall_signal": "REGIME_FILTER_BEARISH", "total_score": 0, "current_price": latest_close}
 
-        # 2. Volatility Adaptive Parameters
-        is_high_vol = latest.get('vol_atr', 0) > latest.get('vol_atr_ma', 0)
+        is_high_vol = snapshot["is_high_vol"]
         if is_high_vol:
             ma_short, ma_long, adx_val, adx_thresh, atr_sl_mult, ma_short_series = (
                 latest.get('high_vol_ma_short'), latest.get('high_vol_ma_long'), latest.get('high_vol_adx'),
@@ -120,36 +145,63 @@ class MultiIndicatorStrategy(TradingStrategy):
                 self.p['low_vol_adx_threshold'], self.p['low_vol_atr_sl_multiplier'], indicators['low_vol_ma_short']
             )
 
-        # 3. Confluence Scoring
-        buy_score = 0
-        if ma_short > ma_long: buy_score += 1
-        if previous.get('macd') < previous.get('macd_signal') and latest.get('macd') > latest.get('macd_signal'):
-            buy_score += 2
-        if previous.get('rsi') < self.p['rsi_oversold'] and latest.get('rsi') > self.p['rsi_oversold']:
-            buy_score += 1
+        # --- Exit Signal Check ---
+        if ma_short < ma_long:
+            return {
+                "overall_signal": "NEUTRAL",
+                "exit_signal": "EXIT_LONG",
+                "current_price": latest_close,
+                "snapshot": snapshot
+            }
 
+        # --- Entry Logic ---
         final_signal = "NEUTRAL"
+        buy_score = 0
+
+        # Scoring Component 1: Trend
+        c1_trend = ma_short > ma_long
+        if c1_trend: buy_score += 1
+        snapshot['components']['trend'] = {
+            "value": f"MA({self.p['low_vol_ma_short'] if not is_high_vol else self.p['high_vol_ma_short']}) > MA({self.p['low_vol_ma_long'] if not is_high_vol else self.p['high_vol_ma_long']})",
+            "result": c1_trend, "score": 1 if c1_trend else 0}
+
+        # Scoring Component 2: Momentum
+        c2_momentum = previous.get('macd', 0) < previous.get('macd_signal', 0) and latest.get('macd', 0) > latest.get(
+            'macd_signal', 0)
+        if c2_momentum: buy_score += 2
+        snapshot['components']['momentum'] = {"value": f"MACD Cross Up", "result": c2_momentum,
+                                              "score": 2 if c2_momentum else 0}
+
+        # Scoring Component 3: Pullback
+        c3_pullback = previous.get('rsi', 0) < self.p['rsi_oversold'] and latest.get('rsi', 0) > self.p['rsi_oversold']
+        if c3_pullback: buy_score += 1
+        snapshot['components']['pullback'] = {"value": f"RSI Cross Up {self.p['rsi_oversold']}", "result": c3_pullback,
+                                              "score": 1 if c3_pullback else 0}
+
+        snapshot['total_score'] = buy_score
+
         if buy_score >= self.p['buy_score_threshold']:
-            if adx_val > adx_thresh:
-                # Slope Confirmation
+            c4_strength = adx_val > adx_thresh
+            snapshot['components']['strength'] = {"value": f"ADX > {adx_thresh}", "result": c4_strength}
+            if c4_strength:
                 y_values = ma_short_series.iloc[-self.p['slope_lookback_period']:].values
                 if len(y_values) == self.p['slope_lookback_period']:
-                    x_values = np.arange(len(y_values))
-                    slope = np.polyfit(x_values, y_values, 1)[0]
-                    if slope > self.p['slope_min_threshold']:
+                    slope = np.polyfit(np.arange(len(y_values)), y_values, 1)[0]
+                    c5_slope = slope > self.p['slope_min_threshold']
+                    snapshot['components']['slope'] = {"value": f"Slope > {self.p['slope_min_threshold']}",
+                                                       "result": c5_slope, "slope_value": slope}
+                    if c5_slope:
                         final_signal = "POTENTIAL_BUY"
 
-        # 4. [FIX] Calculate Exits and provide complete information
-        suggested_sl = None
-        take_profit_condition = "Trend reversal (short MA crosses below long MA)"  # This is our dynamic TP
-
-        if final_signal == "POTENTIAL_BUY":
-            suggested_sl = latest_close - (latest.get('vol_atr', 0) * atr_sl_mult)
+        suggested_sl = latest_close - (latest.get('vol_atr', 0) * atr_sl_mult)
 
         return {
             "overall_signal": final_signal,
-            "total_score": buy_score,
+            "exit_signal": None,
             "current_price": latest_close,
-            "suggested_sl": suggested_sl,
-            "take_profit_condition": take_profit_condition
+            "risk_management": {
+                "suggested_sl": suggested_sl,
+                "take_profit_condition": "Trend reversal (short MA crosses below long MA)"
+            },
+            "snapshot": snapshot
         }

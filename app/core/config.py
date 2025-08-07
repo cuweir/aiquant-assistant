@@ -17,6 +17,8 @@ class Settings:
 
     BINANCE_FUTURES_TESTNET_API_KEY: str = os.getenv("BINANCE_FUTURES_TESTNET_API_KEY")
     BINANCE_FUTURES_TESTNET_API_SECRET: str = os.getenv("BINANCE_FUTURES_TESTNET_API_SECRET")
+    BINANCE_FUTURES_LIVE_API_KEY: str = os.getenv("BINANCE_FUTURES_LIVE_API_KEY")
+    BINANCE_FUTURES_LIVE_API_SECRET: str = os.getenv("BINANCE_FUTURES_LIVE_API_SECRET")
 
     # --- LLM Provider Configuration ---
     ACTIVE_LLM_PROVIDER: str = os.getenv("ACTIVE_LLM_PROVIDER", "gemini").lower()
@@ -37,7 +39,7 @@ class Settings:
     ]
 
     # Set to False to connect to the LIVE Binance Futures market
-    IS_TESTNET: bool = True
+    IS_TESTNET: bool = False
 
     # The percentage of the total futures account balance to risk on a single trade.
     # e.g., 0.02 means 2% of the total balance.
@@ -47,7 +49,7 @@ class Settings:
     LEVERAGE: int = 20  # Default to 10x
 
     # The maximum number of positions the bot is allowed to hold open simultaneously.
-    MAX_OPEN_POSITIONS: int = 3  # Default to a max of 3 concurrent positions
+    MAX_OPEN_POSITIONS: int = 4  # Default to a max of 3 concurrent positions
 
     # --- Trend Filter Parameters ---
     TREND_FILTER_PERIOD_SHORT: int = 50  # e.g., use 50-EMA on the 1h chart

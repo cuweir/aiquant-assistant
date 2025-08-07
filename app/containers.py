@@ -18,7 +18,7 @@ class Container:
         # 1. Create leaf-level services
         self.param_manager = ParameterManager()
         self.llm_strategy = get_llm_strategy(settings)
-        self.order_executor = OrderExecutor(is_testnet=True)
+        self.order_executor = OrderExecutor(is_testnet=settings.IS_TESTNET)
         self.data_updater = DataUpdaterService()
 
         # 2. Create the TradingService, injecting its dependencies

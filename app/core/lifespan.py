@@ -40,53 +40,56 @@ async def scheduled_data_update_task():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+        The application's lifespan manager.
+        """
     print("Application startup...")
+    # Initialize services
+    await container.order_executor.initialize()
+    print("Services initialized successfully.")
 
-    # --- Schedule Data Update Job ---
-    # Runs every minute to keep the local database fresh.
+    # --- Scheduler Setup ---
+    # Data update job remains every 15 minutes
     scheduler.add_job(
         scheduled_data_update_task,
-        trigger=CronTrigger(minute="*/15", second="5"), # Runs at the start of every minute
+        trigger=CronTrigger(minute="*/15", second="5"),
         id="data_update_job",
-        name="15-Minute OHLCV Data Update Job",
-        replace_existing=True,
+        name="15-Minute OHLCV Data Update Job"
     )
-    print("Scheduler: Minute OHLCV Data Update Job scheduled.")
+    print("Scheduler: 15-Minute Data Update Job scheduled.")
 
-    # --- Schedule Analysis Job ---
-    if settings.SIGNAL_TIMEFRAME == "15m":
-        # Run at 08:00:15, 08:15:15, etc.
-        trigger = CronTrigger(minute="*/15", second="15")
-        job_name = "15-Minute Analysis Job"
-    elif settings.SIGNAL_TIMEFRAME == "1h":
-        # Run at 08:00:15, 09:00:15, etc.
-        # It will use the fresh data fetched by the 15-min updater at 08:00:05.
-        trigger = CronTrigger(hour="*", minute="0", second="15")
-        job_name = "Hourly Analysis Job"
-    elif settings.SIGNAL_TIMEFRAME == "4h":
-        # Run at 00:00:15, 04:00:15, 08:00:15, etc.
-        trigger = CronTrigger(hour="*/4", minute="0", second="15")
-        job_name = "4-Hour Analysis Job"
-    else:
-        raise ValueError(f"Unsupported SIGNAL_TIMEFRAME for scheduler: {settings.SIGNAL_TIMEFRAME}")
-
+    # Production analysis job remains every hour
     scheduler.add_job(
         scheduled_analysis_task,
-        trigger=trigger,
+        trigger=CronTrigger(hour="*", minute="0", second="15"),
         id="market_analysis_job",
-        name=job_name,
-        replace_existing=True,
+        name="Hourly Analysis Job"
     )
-    print(f"Scheduler: {job_name} scheduled.")
+    print(f"Scheduler: Hourly Analysis Job scheduled.")
 
     scheduler.start()
     print("Scheduler started.")
 
-    # Run the data update once on startup to ensure data is available.
-    print("Running initial data update on startup...")
-    await scheduled_data_update_task()
-    print("Initial data update complete.")
+    # --- [CRITICAL FIX] IMMEDIATE VALIDATION LOGIC ---
+    # We will run the tasks once on startup to allow for immediate verification.
 
+    print("\n" + "=" * 50)
+    print("RUNNING IMMEDIATE VALIDATION TASKS ON STARTUP")
+    print("=" * 50 + "\n")
+
+    # Run initial data update first
+    print("--- Running initial data update... ---")
+    await scheduled_data_update_task()
+    print("--- Initial data update complete. ---\n")
+
+    # Add a small delay to ensure everything is settled
+    await asyncio.sleep(2)
+
+    # Then, run the analysis task to see the results immediately
+    print("--- Running initial analysis task for immediate verification... ---")
+    await scheduled_analysis_task()
+    print("--- Initial analysis task complete. The system will now run on its schedule. ---")
+    print("=" * 50 + "\n")
 
     yield
 
@@ -94,7 +97,5 @@ async def lifespan(app: FastAPI):
     if scheduler.running:
         scheduler.shutdown()
         print("Scheduler shut down.")
-
-    await container.analysis_service.close_llm_resources()
     await container.order_executor.close_connections()
     print("Resources cleaned up.")
