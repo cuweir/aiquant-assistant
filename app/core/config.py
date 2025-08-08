@@ -43,13 +43,13 @@ class Settings:
 
     # The percentage of the total futures account balance to risk on a single trade.
     # e.g., 0.02 means 2% of the total balance.
-    RISK_PER_TRADE_PERCENT: float = 0.2  # Default to a safe 2%
+    RISK_PER_TRADE_PERCENT: float = 0.01  # 1% for live testing (very conservative)
 
     # The default leverage to apply to all trades.
     LEVERAGE: int = 3  # 3x leverage for live testing (much safer)
 
     # The maximum number of positions the bot is allowed to hold open simultaneously.
-    MAX_OPEN_POSITIONS: int = 3  # Default to a max of 3 concurrent positions
+    MAX_OPEN_POSITIONS: int = 1  # Only 1 position for live testing
 
     # --- Trend Filter Parameters ---
     TREND_FILTER_PERIOD_SHORT: int = 50  # e.g., use 50-EMA on the 1h chart
