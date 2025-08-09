@@ -28,7 +28,7 @@ class OrderExecutor:
             'apiKey': api_key,
             'secret': secret,
             'options': {'defaultType': 'future'},
-            'aiohttp_proxy': 'http://127.0.0.1:7890',  # Uncomment if you need proxy
+            # 'aiohttp_proxy': 'http://127.0.0.1:7890',  # Uncomment if you need proxy
             'enableRateLimit': True,  # Enable rate limiting
         })
         if is_testnet:
