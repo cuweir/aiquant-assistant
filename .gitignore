@@ -89,4 +89,7 @@ nosetests.xml
 # *.pem
 # *.key
 
-# --- END OF FILE .gitignore ---
+# --- END OF FILE .gitignore ---.DS_Store
+.idea/
+*.pyc
+.DS_Store
