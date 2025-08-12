@@ -11,7 +11,7 @@ from ..core.config import settings
 from ..llm_providers.base import LLMStrategy
 from ..db.session import SessionLocal
 from ..db.models import AnalysisResult, Symbol, Strategy
-from ..models.schemas import AnalysisReport
+from ..models.schemas import AnalysisReport, Confidence, KeyFactors, RiskManagement
 from ..utils.formatters import format_price_dynamically
 from .backtest.db_data_fetcher import fetch_df_from_postgres
 from .parameter_manager import ParameterManager
@@ -87,6 +87,28 @@ class AnalysisService:
             print(f"  > Strategy Snapshot for {symbol_name}:")
             print(json.dumps(snapshot, indent=4, default=str))
 
+            # [FIX] Explicitly map data from strategy result to Pydantic sub-models
+            # This is the core of the fix. We build the nested objects correctly.
+            components = snapshot.get("components", {})
+
+            confidence_obj = Confidence(
+                score=snapshot.get("total_score"),
+                volatility_regime='High' if snapshot.get("is_high_vol") else 'Low'
+            )
+
+            key_factors_obj = KeyFactors(
+                is_bull_regime=snapshot.get("is_bull_regime"),
+                adx_value=components.get("strength", {}).get("value"),
+                adx_threshold=components.get("strength", {}).get("threshold"),
+                ma_slope=components.get("slope", {}).get("value")
+            )
+
+            risk_management_obj = RiskManagement(
+                suggested_sl=strategy_result.get("risk_management", {}).get("suggested_sl"),
+                take_profit_condition=strategy_result.get("risk_management", {}).get("take_profit_condition")
+            )
+
+            # 5. [CRITICAL] Build the full report object using the correctly structured sub-models
             try:
                 report = AnalysisReport(
                     timestamp=pd.Timestamp.now(tz='UTC').to_pydatetime(),
@@ -95,19 +117,18 @@ class AnalysisService:
                     price=strategy_result.get("current_price"),
                     signal=strategy_result.get("overall_signal", "ERROR"),
                     ai_analysis="AI analysis not triggered.",
-                    risk_management=strategy_result.get("risk_management"),
-                    confidence=snapshot,
-                    key_factors=snapshot.get("components"),
+                    risk_management=risk_management_obj,  # Use the created object
+                    confidence=confidence_obj,  # Use the created object
+                    key_factors=key_factors_obj,  # Use the created object
                     snapshot=snapshot
                 )
             except Exception as e:
                 print(f"  > FAILED to build Pydantic model from strategy result: {e}")
                 return None
 
-            # 5. [CRITICAL] Build the full report object BEFORE making decisions
             report_data = report.model_dump()
 
-            # 6. [RESTORED] LLM Analysis
+            # 6. LLM Analysis (logic remains the same)
             should_call_llm = report_data["signal"] == "POTENTIAL_BUY"
             if should_call_llm:
                 print(f"  > Signal is valid. Querying LLM...")
@@ -117,7 +138,7 @@ class AnalysisService:
 
             serializable_details = make_dict_json_serializable(report_data.copy())
 
-            # 7. [RESTORED] Database Archiving
+            # 7. Database Archiving (logic remains the same)
             strategy_record = self._get_or_create_strategy(db, "confluence_v7_adaptive_final", symbol_params)
             db_analysis_result = AnalysisResult(
                 timestamp=report_data['timestamp'],
@@ -128,17 +149,16 @@ class AnalysisService:
                 overall_signal=report_data['signal'],
                 llm_queried=should_call_llm,
                 llm_analysis=report_data['ai_analysis'],
-                indicator_details=serializable_details  # Store the entire new object
+                indicator_details=serializable_details
             )
             db.add(db_analysis_result)
             db.commit()
             print(f"  > Analysis report for {symbol_name} successfully saved to database.")
 
-            # 8. [DECOUPLING] Pass the signal report to the TradingService for action
-            # The TradingService makes the final decision to trade or not.
+            # 8. Pass the signal report to the TradingService for action (logic remains the same)
             await self.trading_service.process_signal(db, symbol_record, strategy_result)
 
-            return report_data  # Return the complete report for the manual trigger API
+            return report_data
 
         except Exception as e:
             print(f"  > An unexpected error during analysis for {symbol_name}: {e}")
@@ -161,8 +181,8 @@ class AnalysisService:
           - Take Profit Condition: {report['risk_management']['take_profit_condition']}
 
         - Key Confidence Factors:
-          - Signal Score: {report['confidence']['total_score']}
-          - Volatility Regime: {'High' if report['confidence']['is_high_vol'] else 'Low'}
+          - Signal Score: {report['confidence']['score']}
+          - Volatility Regime: {report['confidence']['volatility_regime']}
 
         AI Analyst Task:
         1.  Provide a concise, professional final verdict: **[Strong Buy / Cautious Buy / Hold]**.

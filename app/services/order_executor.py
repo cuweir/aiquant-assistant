@@ -39,9 +39,14 @@ class OrderExecutor:
         })
 
         # Set proxy session for CCXT's aiohttp
-        self.exchange.session = aiohttp.ClientSession(
-            proxy="http://127.0.0.1:7890"
-        )
+        if settings.PROXY_URL:
+            self.exchange.session = aiohttp.ClientSession(
+                proxy=settings.PROXY_URL
+            )
+
+        mode_message = "TESTNET" if is_testnet else "LIVE"
+        proxy_message = f"with proxy ({settings.PROXY_URL})" if settings.PROXY_URL else "without proxy"
+        print(f"OrderExecutor initialized in {mode_message} mode {proxy_message}.")
 
         if is_testnet:
             self.exchange.set_sandbox_mode(True)
@@ -58,7 +63,6 @@ class OrderExecutor:
         if not self.markets_loaded:
             print("Performing initial setup for OrderExecutor...")
 
-            # [CRITICAL FIX] Perform time synchronization check
             try:
                 print("  > Checking time synchronization with Binance server...")
                 server_time = await self.exchange.fetch_time()
@@ -85,7 +89,9 @@ class OrderExecutor:
             print("Exchange markets loaded successfully.")
 
     async def close_connections(self):
-        await self.exchange.close()
+        if self.exchange.session:
+            await self.exchange.session.close()
+        # await self.exchange.close() # exchange.close() also closes the session
         print("OrderExecutor connection closed.")
 
     async def get_balance(self, currency: str = 'USDT') -> float:

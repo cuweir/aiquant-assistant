@@ -1,4 +1,6 @@
 import os
+from typing import Optional
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -7,6 +9,8 @@ class Settings:
     PROJECT_NAME: str = "AI Quant Assistant"
     PROJECT_VERSION: str = "0.5.0" # Version up for DB persistence
     SERVER_PUBLIC_IP: str = os.getenv("SERVER_PUBLIC_IP")
+
+    PROXY_URL: Optional[str] = os.getenv("PROXY_URL", None)
 
     # --- Database ---
     DATABASE_URL: str = os.getenv("DATABASE_URL")
@@ -111,6 +115,11 @@ if not all([
 
 if not settings.DATABASE_URL:
     raise ValueError("DATABASE_URL is not set in the .env file.")
+
+if settings.PROXY_URL:
+    print(f"Network Proxy is ENABLED: {settings.PROXY_URL}")
+else:
+    print("Network Proxy is DISABLED.")
 
 print(f"AI Quant Assistant configured with LLM Provider: {settings.ACTIVE_LLM_PROVIDER.upper()}")
 print(f"Using LLM Model: {settings.GEMINI_MODEL_NAME if settings.ACTIVE_LLM_PROVIDER == 'gemini' else 'N/A'}")

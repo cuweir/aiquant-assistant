@@ -8,15 +8,21 @@ class DataFetcher:
     def __init__(self):
         self.exchange_id = 'binance' # Or your preferred exchange
         self.exchange_class = getattr(ccxt, self.exchange_id)
-        self.exchange = self.exchange_class({
+        exchange_config = {
             'apiKey': settings.BINANCE_API_KEY,
             'secret': settings.BINANCE_API_SECRET,
-            'enableRateLimit': True, # CCXT built-in rate limiter
-            # 'options': {'defaultType': 'future'} # if you are trading futures
-            'aiohttp_proxy': 'http://127.0.0.1:7890',
-            # 'aiohttp_proxy': 'http://127.0.0.1:10809', # for windows
-        })
-        print(f"Initialized {self.exchange_id} Data Fetcher (Read-Only).")
+            'enableRateLimit': True,
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36"
+            }
+        }
+        if settings.PROXY_URL:
+            exchange_config['aiohttp_proxy'] = settings.PROXY_URL
+
+        self.exchange = self.exchange_class(exchange_config)
+        print(f"Initialized {self.exchange_id} Data Fetcher (Read-Only) with proxy.")
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> Union[pd.DataFrame, None]:
         try:
