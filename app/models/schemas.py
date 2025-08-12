@@ -1,49 +1,40 @@
-import pandas as pd
-from pydantic import BaseModel, field_validator
-from typing import Optional, List, Dict, Any
+# app/models/schemas.py
+
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
 import datetime
 
-class SignalDetail(BaseModel):
-    indicator: str
-    signal: str
-    value: Any # Can be float or string
-    score_change: float
+# These models define the structure of our NEW API responses.
 
-class AnalysisDetails(BaseModel):
-    composite_score: float
-    individual_signals_details: List[SignalDetail]
+class RiskManagement(BaseModel):
+    suggested_sl: Optional[float] = None
+    take_profit_condition: Optional[str] = None
 
-class SignalInput(BaseModel):
-    symbol: str
-    timeframe: str
+class Confidence(BaseModel):
+    score: Optional[float] = None
+    volatility_regime: Optional[str] = None
 
-class LocalSignalOutput(BaseModel):
-    symbol: str
-    timeframe: str
-    signal_type: Optional[str] = None
-    rsi_value: Optional[float] = None
-    current_price: Optional[float] = None
-    message: str
+class KeyFactors(BaseModel):
+    is_bull_regime: Optional[bool] = None
+    adx_value: Optional[float] = None
+    adx_threshold: Optional[float] = None
+    ma_slope: Optional[float] = None
 
-class AIAnalysisOutput(BaseModel):
+class AnalysisReport(BaseModel):
     timestamp: datetime.datetime
     symbol: str
     timeframe: str
-    local_signal: str
-    rsi: Optional[float] = None
     price: float
-    ai_analysis: str
-    stop_loss: Optional[float] = None
-    take_profit_1: Optional[float] = None
-    take_profit: Optional[float] = None
-    details: Optional[AnalysisDetails] = None
-    # prompt: Optional[str] = None # Optionally include for debugging
+    signal: str
 
-    # Pydantic v2 aotmatically handles timezone conversion if the string is correctly formatted.
-    # The custom validator can be simplified or removed if input is always timezone-aware.
-    @field_validator('rsi', mode='before')
-    @classmethod
-    def rsi_must_be_float_or_none(cls, v):
-        if v is not None and pd.isna(v):
-            return None
-        return v
+    ai_analysis: Optional[str] = None
+    risk_management: Optional[RiskManagement] = None
+    confidence: Optional[Confidence] = None
+    key_factors: Optional[KeyFactors] = None
+    snapshot: Optional[Dict[str, Any]] = None
+
+    class Config:
+        from_attributes = True # Used to be orm_mode = True
+
+class ManualTriggerInput(BaseModel):
+    symbol: str

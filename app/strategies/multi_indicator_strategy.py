@@ -133,11 +133,8 @@ class MultiIndicatorStrategy(TradingStrategy):
 
         indicators = self._calculate_indicators(df_signal, df_regime)
         if not indicators:
-            return {"overall_signal": "INSUFFICIENT_CLEAN_DATA", "current_price": df_signal['close'].iloc[-1]}
+            return {"overall_signal": "INDICATOR_ERROR", "current_price": df_signal['close'].iloc[-1]}
 
-        print(f"  > Indicators calculated: {list(indicators.keys())}")
-
-        # Check for NaN values in the last few values of each indicator
         for name, series in indicators.items():
             if len(series) >= 2:
                 last_val = series.iloc[-1]
@@ -146,119 +143,76 @@ class MultiIndicatorStrategy(TradingStrategy):
             else:
                 print(f"  > {name}: insufficient data (length={len(series)})")
 
-        latest = {name: series.iloc[-1] for name, series in indicators.items() if pd.notna(series.iloc[-1])}
-        previous = {name: series.iloc[-2] for name, series in indicators.items() if pd.notna(series.iloc[-2])}
+        latest = {name: series.iloc[-1] for name, series in indicators.items() if
+                  series is not None and pd.notna(series.iloc[-1])}
+        previous = {name: series.iloc[-2] for name, series in indicators.items() if
+                    series is not None and len(series) > 1 and pd.notna(series.iloc[-2])}
         latest_close = df_signal['close'].iloc[-1]
 
-        print(f"  > Latest values: {list(latest.keys())}")
-        print(f"  > Previous values: {list(previous.keys())}")
+        # --- 1. Always get the dynamic parameters and indicators first ---
+        is_high_vol = latest.get('vol_atr', 0) > latest.get('vol_atr_ma', 0)
+        if is_high_vol:
+            ma_short, ma_long, adx_val, adx_thresh, atr_sl_mult, ma_short_series = (
+                latest.get('high_vol_ma_short'), latest.get('high_vol_ma_long'), latest.get('high_vol_adx'),
+                self.p['high_vol_adx_threshold'], self.p['high_vol_atr_sl_multiplier'],
+                indicators.get('high_vol_ma_short')
+            )
+        else:
+            ma_short, ma_long, adx_val, adx_thresh, atr_sl_mult, ma_short_series = (
+                latest.get('low_vol_ma_short'), latest.get('low_vol_ma_long'), latest.get('low_vol_adx'),
+                self.p['low_vol_adx_threshold'], self.p['low_vol_atr_sl_multiplier'], indicators.get('low_vol_ma_short')
+            )
 
-        if not latest:
-            print(f"  > ERROR: No valid latest values found!")
-            return {"overall_signal": "NO_VALID_INDICATORS", "current_price": latest_close}
+        if ma_short is None or ma_long is None:
+            return {"overall_signal": "INDICATOR_ERROR", "current_price": latest_close}
+
+        # --- 2. Always calculate ALL components and build the full snapshot ---
+        c1_trend = ma_short > ma_long
+        c2_momentum = previous.get('macd', 0) < previous.get('macd_signal', 0) and latest.get('macd', 0) > latest.get(
+            'macd_signal', 0)
+        c3_pullback = previous.get('rsi', 0) < self.p['rsi_oversold'] and latest.get('rsi', 0) > self.p['rsi_oversold']
+        c4_strength = adx_val is not None and adx_val > adx_thresh
+
+        slope = None
+        c5_slope = False
+        if ma_short_series is not None:
+            y_values = ma_short_series.iloc[-self.p['slope_lookback_period']:].values
+            if len(y_values) == self.p['slope_lookback_period']:
+                slope = np.polyfit(np.arange(len(y_values)), y_values, 1)[0]
+                c5_slope = slope > self.p['slope_min_threshold']
+
+        buy_score = (1 if c1_trend else 0) + (2 if c2_momentum else 0) + (1 if c3_pullback else 0)
 
         snapshot = {
             "price": latest_close,
             "regime_ma": latest.get('regime_ma'),
             "is_bull_regime": df_regime['close'].iloc[-1] > latest.get('regime_ma', float('inf')),
-            "vol_atr": latest.get('vol_atr'),
-            "vol_atr_ma": latest.get('vol_atr_ma'),
-            "is_high_vol": latest.get('vol_atr', 0) > latest.get('vol_atr_ma', 0),
-            "components": {}  # To be filled below
+            "is_high_vol": is_high_vol,
+            "total_score": buy_score,
+            "components": {
+                "trend": {"result": c1_trend, "score": 1 if c1_trend else 0},
+                "momentum": {"result": c2_momentum, "score": 2 if c2_momentum else 0},
+                "pullback": {"result": c3_pullback, "score": 1 if c3_pullback else 0},
+                "strength": {"result": c4_strength, "value": adx_val, "threshold": adx_thresh},
+                "slope": {"result": c5_slope, "value": slope, "threshold": self.p['slope_min_threshold']}
+            }
         }
 
-        print(f"  > Current regime price: {df_regime['close'].iloc[-1]}")
-        print(f"  > Regime MA: {latest.get('regime_ma')}")
-        print(f"  > Is bull regime: {snapshot['is_bull_regime']}")
-
-        # --- Strategy Logic ---
-        is_bull_regime = snapshot["is_bull_regime"]
-        if not is_bull_regime:
-            return {"overall_signal": "REGIME_FILTER_BEARISH", "total_score": 0, "current_price": latest_close, "snapshot": snapshot}
-
-        is_high_vol = snapshot["is_high_vol"]
-        if is_high_vol:
-            ma_short, ma_long, adx_val, adx_thresh, atr_sl_mult, ma_short_series = (
-                latest.get('high_vol_ma_short'), latest.get('high_vol_ma_long'), latest.get('high_vol_adx'),
-                self.p['high_vol_adx_threshold'], self.p['high_vol_atr_sl_multiplier'], indicators['high_vol_ma_short']
-            )
-        else:
-            ma_short, ma_long, adx_val, adx_thresh, atr_sl_mult, ma_short_series = (
-                latest.get('low_vol_ma_short'), latest.get('low_vol_ma_long'), latest.get('low_vol_adx'),
-                self.p['low_vol_adx_threshold'], self.p['low_vol_atr_sl_multiplier'], indicators['low_vol_ma_short']
-            )
-
-        # --- Exit Signal Check ---
-        print(f"  > MA Short: {ma_short}, MA Long: {ma_long}")
-        print(f"  > Exit signal check: ma_short < ma_long = {ma_short < ma_long}")
-
-        if ma_short < ma_long:
-            print(f"  > EXIT SIGNAL triggered - but still filling components for analysis")
-            # Fill components even for exit signals to provide complete analysis
-            snapshot['components']['trend'] = {
-                "value": f"MA({self.p['low_vol_ma_short'] if not is_high_vol else self.p['high_vol_ma_short']}) > MA({self.p['low_vol_ma_long'] if not is_high_vol else self.p['high_vol_ma_long']})",
-                "result": False, "score": 0}
-
-            # Add other components for completeness
-            c2_momentum = previous.get('macd', 0) < previous.get('macd_signal', 0) and latest.get('macd', 0) > latest.get('macd_signal', 0)
-            snapshot['components']['momentum'] = {"value": f"MACD Cross Up", "result": c2_momentum, "score": 2 if c2_momentum else 0}
-
-            c3_pullback = previous.get('rsi', 0) < self.p['rsi_oversold'] and latest.get('rsi', 0) > self.p['rsi_oversold']
-            snapshot['components']['pullback'] = {"value": f"RSI Cross Up {self.p['rsi_oversold']}", "result": c3_pullback, "score": 1 if c3_pullback else 0}
-
-            snapshot['total_score'] = 0  # Exit signal overrides any positive score
-
-            return {
-                "overall_signal": "NEUTRAL",
-                "exit_signal": "EXIT_LONG",
-                "current_price": latest_close,
-                "snapshot": snapshot
-            }
-
-        # --- Entry Logic ---
+        # --- 3. Now, make decisions based on the complete snapshot ---
         final_signal = "NEUTRAL"
-        buy_score = 0
+        exit_signal = None
 
-        # Scoring Component 1: Trend
-        c1_trend = ma_short > ma_long
-        if c1_trend: buy_score += 1
-        snapshot['components']['trend'] = {
-            "value": f"MA({self.p['low_vol_ma_short'] if not is_high_vol else self.p['high_vol_ma_short']}) > MA({self.p['low_vol_ma_long'] if not is_high_vol else self.p['high_vol_ma_long']})",
-            "result": c1_trend, "score": 1 if c1_trend else 0}
+        if not c1_trend:  # If death cross
+            exit_signal = "EXIT_LONG"
 
-        # Scoring Component 2: Momentum
-        c2_momentum = previous.get('macd', 0) < previous.get('macd_signal', 0) and latest.get('macd', 0) > latest.get(
-            'macd_signal', 0)
-        if c2_momentum: buy_score += 2
-        snapshot['components']['momentum'] = {"value": f"MACD Cross Up", "result": c2_momentum,
-                                              "score": 2 if c2_momentum else 0}
-
-        # Scoring Component 3: Pullback
-        c3_pullback = previous.get('rsi', 0) < self.p['rsi_oversold'] and latest.get('rsi', 0) > self.p['rsi_oversold']
-        if c3_pullback: buy_score += 1
-        snapshot['components']['pullback'] = {"value": f"RSI Cross Up {self.p['rsi_oversold']}", "result": c3_pullback,
-                                              "score": 1 if c3_pullback else 0}
-
-        snapshot['total_score'] = buy_score
-
-        if buy_score >= self.p['buy_score_threshold']:
-            c4_strength = adx_val > adx_thresh
-            snapshot['components']['strength'] = {"value": f"ADX > {adx_thresh}", "result": c4_strength}
-            if c4_strength:
-                y_values = ma_short_series.iloc[-self.p['slope_lookback_period']:].values
-                if len(y_values) == self.p['slope_lookback_period']:
-                    slope = np.polyfit(np.arange(len(y_values)), y_values, 1)[0]
-                    c5_slope = slope > self.p['slope_min_threshold']
-                    snapshot['components']['slope'] = {"value": f"Slope > {self.p['slope_min_threshold']}",
-                                                       "result": c5_slope, "slope_value": slope}
-                    if c5_slope:
-                        final_signal = "POTENTIAL_BUY"
+        if snapshot["is_bull_regime"] and buy_score >= self.p['buy_score_threshold'] and c4_strength and c5_slope:
+            final_signal = "POTENTIAL_BUY"
 
         suggested_sl = latest_close - (latest.get('vol_atr', 0) * atr_sl_mult)
 
         return {
             "overall_signal": final_signal,
-            "exit_signal": None,
+            "exit_signal": exit_signal,
             "current_price": latest_close,
             "risk_management": {
                 "suggested_sl": suggested_sl,

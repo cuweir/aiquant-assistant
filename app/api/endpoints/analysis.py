@@ -1,8 +1,10 @@
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List
+
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from ...models.schemas import SignalInput, AIAnalysisOutput, AnalysisDetails, SignalDetail
+from ...models.schemas import AnalysisReport, ManualTriggerInput
 from ...services.analysis_service import AnalysisService
 from ...db.session import get_db
 from ...containers import container
@@ -14,57 +16,61 @@ def get_analysis_service():
     return container.analysis_service
 
 
-@router.post("/trigger-analysis", response_model=AIAnalysisOutput)
-async def trigger_comprehensive_ai_analysis(
-        signal_input: SignalInput,
+@router.post("/trigger-analysis", response_model=AnalysisReport)
+async def trigger_manual_analysis(
+        trigger_input: ManualTriggerInput,
         service: AnalysisService = Depends(get_analysis_service)
 ):
-    result_dict = await service.generate_comprehensive_analysis(
-        symbol_name=signal_input.symbol,
-        signal_timeframe=signal_input.timeframe
-    )
-    if not result_dict:
-        raise HTTPException(status_code=500, detail="Analysis could not be generated or saved.")
-    # The returned dict is already shaped like the Pydantic model
-    return result_dict
+    """
+    Manually triggers a comprehensive analysis for a single symbol
+    and returns the complete, new AnalysisReport.
+    """
+    print(f"\n--- [MANUAL TRIGGER] Received request to analyze {trigger_input.symbol} ---")
+
+    # The service now returns the full report object, which we can directly return
+    result = await service.generate_comprehensive_analysis(trigger_input.symbol)
+
+    if result is None:
+        raise HTTPException(status_code=500, detail="Analysis failed or produced no result. Check server logs.")
+
+    return result
 
 
-@router.get("/get-all-analyses", response_model=List[AIAnalysisOutput])
+@router.get("/get-all-analyses", response_model=List[AnalysisReport])
 async def get_all_analyses_endpoint(
-        db: Session = Depends(get_db),  # Inject the database session
-        service: AnalysisService = Depends(get_analysis_service),
-        skip: int = 0,
-        limit: int = 20  # Add pagination
+        db: Session = Depends(get_db),
+        service: AnalysisService = Depends(get_analysis_service)
 ):
-    db_results = service.get_all_analyses_from_db(db=db, skip=skip, limit=limit)
-
-    # Convert DB ORM objects to Pydantic models for the response
-    response_list = []
+    """
+    Fetches the most recent analysis results from the database.
+    """
+    db_results = service.get_all_analyses_from_db(db=db, skip=0, limit=20)
+    response_list: List[AnalysisReport] = []
     for r in db_results:
-        details_data = None
-        if r.indicator_details is not None and r.composite_score is not None:
-            details_data = AnalysisDetails(
-                composite_score=r.composite_score,
-                individual_signals_details=[SignalDetail(**detail) for detail in r.indicator_details]
-            )
-        # Safely get RSI value from the JSONB field
-        rsi_val = float('nan')
-        if r.indicator_details:
-            rsi_val = next((d.get('value') for d in r.indicator_details if d.get('indicator') == 'RSI'), float('nan'))
+        details_json = r.indicator_details or {}
 
-        response_list.append(
-            AIAnalysisOutput(
-                timestamp=r.timestamp,
-                symbol=r.symbol.name,  # Access related symbol name via relationship
-                timeframe=r.timeframe,
-                local_signal=r.overall_signal,
-                rsi=rsi_val,
-                price=float(r.current_price),
-                ai_analysis=r.llm_analysis,
-                stop_loss=float(r.suggested_sl) if r.suggested_sl else None,
-                take_profit=float(r.suggested_tp) if r.suggested_tp else None,
-                take_profit_1=float(r.suggested_tp1) if r.suggested_tp1 else None,
-                details=details_data
-            )
-        )
+        try:
+            report_data = {
+                # --- Core fields from the main table ---
+                "timestamp": r.timestamp,
+                "symbol": r.symbol.name,  # Get name from the relationship
+                "timeframe": r.timeframe,
+                "price": float(r.current_price),  # Convert Decimal to float
+                "signal": r.overall_signal,
+                "ai_analysis": r.llm_analysis,
+
+                # --- Nested fields from the JSONB details ---
+                "risk_management": details_json.get("risk_management"),
+                "confidence": details_json.get("confidence"),
+                "key_factors": details_json.get("key_factors"),
+                "snapshot": details_json.get("snapshot")
+            }
+
+            # Use Pydantic to validate the final constructed data
+            report = AnalysisReport.model_validate(report_data)
+            response_list.append(report)
+
+        except (ValidationError, TypeError) as e:
+            print(f"Skipping malformed DB record {r.id} due to validation error: {e}")
+            continue
     return response_list

@@ -16,4 +16,4 @@ alembic~=1.16.4
 psycopg2-binary
 APScheduler~=3.11.0
 backtrader~=1.9.78.123
-numpy~=2.2.6
+numpy~=1.26.4

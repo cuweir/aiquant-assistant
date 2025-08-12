@@ -1,5 +1,5 @@
 # app/services/order_executor.py
-
+import aiohttp
 import ccxt.async_support as ccxt
 import asyncio
 import time
@@ -22,15 +22,27 @@ class OrderExecutor:
         else:
             api_key = settings.BINANCE_FUTURES_LIVE_API_KEY
             secret = settings.BINANCE_FUTURES_LIVE_API_SECRET
+
         if not api_key or not secret:
-            raise ValueError(f"Binance Futures API keys are not set.")
+            raise ValueError("Binance Futures API keys are not set.")
+
         self.exchange = ccxt.binance({
             'apiKey': api_key,
             'secret': secret,
             'options': {'defaultType': 'future'},
-            # 'aiohttp_proxy': 'http://127.0.0.1:7890',  # Uncomment if you need proxy
-            'enableRateLimit': True,  # Enable rate limiting
+            'enableRateLimit': True,
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36"
+            }
         })
+
+        # Set proxy session for CCXT's aiohttp
+        self.exchange.session = aiohttp.ClientSession(
+            proxy="http://127.0.0.1:7890"
+        )
+
         if is_testnet:
             self.exchange.set_sandbox_mode(True)
             print("OrderExecutor initialized in TESTNET mode.")
