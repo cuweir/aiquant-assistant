@@ -49,6 +49,10 @@ async def get_all_analyses_endpoint(
     for r in db_results:
         details_json = r.indicator_details or {}
 
+        if not isinstance(details_json, dict):
+            print(f"[WARNING] Skipping malformed DB record {r.id}. 'indicator_details' is not a dictionary.")
+            continue
+
         try:
             report_data = {
                 # --- Core fields from the main table ---
