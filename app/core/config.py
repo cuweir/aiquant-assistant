@@ -39,7 +39,7 @@ class Settings:
     # TREND_TIMEFRAME_LONG: str = "1d" # Long trend can now be daily
 
     SYMBOLS_TO_MONITOR: list[str] = [
-        "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
+        "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT",
     ]
 
     # Set to False to connect to the LIVE Binance Futures market
@@ -47,13 +47,13 @@ class Settings:
 
     # The percentage of the total futures account balance to risk on a single trade.
     # e.g., 0.02 means 2% of the total balance.
-    RISK_PER_TRADE_PERCENT: float = 0.01  # 1% for live testing (very conservative)
+    RISK_PER_TRADE_PERCENT: float = 0.03  # 1% for live testing (very conservative)
 
     # The default leverage to apply to all trades.
-    LEVERAGE: int = 3  # 3x leverage for live testing (much safer)
+    LEVERAGE: int = 20  # 3x leverage for live testing (much safer)
 
     # The maximum number of positions the bot is allowed to hold open simultaneously.
-    MAX_OPEN_POSITIONS: int = 1  # Only 1 position for live testing
+    MAX_OPEN_POSITIONS: int = 4  # Only 1 position for live testing
 
     # --- Trend Filter Parameters ---
     TREND_FILTER_PERIOD_SHORT: int = 50  # e.g., use 50-EMA on the 1h chart

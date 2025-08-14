@@ -1,13 +1,16 @@
 from typing import Union
 
-import ccxt.async_support as ccxt # Use async version of ccxt
+import ccxt.async_support as ccxt
 import pandas as pd
 from ..core.config import settings
 
+
 class DataFetcher:
     def __init__(self):
-        self.exchange_id = 'binance' # Or your preferred exchange
+        self.exchange_id = 'binance'
         self.exchange_class = getattr(ccxt, self.exchange_id)
+
+        # [FINAL & CONSISTENT] Use a consolidated config dictionary.
         exchange_config = {
             'apiKey': settings.BINANCE_API_KEY,
             'secret': settings.BINANCE_API_SECRET,
@@ -22,14 +25,14 @@ class DataFetcher:
             exchange_config['aiohttp_proxy'] = settings.PROXY_URL
 
         self.exchange = self.exchange_class(exchange_config)
-        print(f"Initialized {self.exchange_id} Data Fetcher (Read-Only) with proxy.")
+
+        proxy_message = f"with proxy ({settings.PROXY_URL})" if settings.PROXY_URL else "without proxy"
+        print(f"Initialized {self.exchange_id} Data Fetcher (Read-Only) {proxy_message}.")
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> Union[pd.DataFrame, None]:
         try:
-            # For USDT-margined perpetuals, CCXT often expects symbol format like "BTC/USDT:USDT"
-            # For spot, "BTC/USDT" is fine.
-            # You might need to adjust symbol formatting based on exchange.load_markets() output.
-            print(f"Fetching OHLCV for {symbol} ({timeframe})...")
+            # This is not a startup critical path, so existing error handling is sufficient.
+            # It will catch errors and return None, preventing tasks from crashing.
             ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             if ohlcv:
                 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -38,7 +41,6 @@ class DataFetcher:
                 cols_to_convert = ['open', 'high', 'low', 'close', 'volume']
                 for col in cols_to_convert:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
-
                 df.dropna(subset=cols_to_convert, inplace=True)
                 return df
             return None
@@ -52,6 +54,7 @@ class DataFetcher:
 
     async def close_exchange(self):
         await self.exchange.close()
+
 
 # Global instance
 data_fetcher_instance = DataFetcher()

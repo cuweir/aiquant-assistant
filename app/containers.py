@@ -7,7 +7,7 @@ from .services.order_executor import OrderExecutor
 from .services.analysis_service import AnalysisService
 from .services.data_updater import DataUpdaterService
 from .services.trading_service import TradingService
-
+from .job_manager import JobManager # <-- Import the new class
 
 class Container:
     """
@@ -20,6 +20,7 @@ class Container:
         self.llm_strategy = get_llm_strategy(settings)
         self.order_executor = OrderExecutor(is_testnet=settings.IS_TESTNET)
         self.data_updater = DataUpdaterService()
+        self.job_manager = JobManager() # <-- Instantiate the JobManager
 
         # 2. Create the TradingService, injecting its dependencies
         self.trading_service = TradingService(
@@ -30,7 +31,7 @@ class Container:
         # 3. Create the AnalysisService, injecting the TradingService
         self.analysis_service = AnalysisService(
             param_manager=self.param_manager,
-            trading_service=self.trading_service,  # <-- Injection
+            trading_service=self.trading_service,
             llm_strategy=self.llm_strategy
         )
 

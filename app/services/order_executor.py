@@ -1,4 +1,3 @@
-# app/services/order_executor.py
 import aiohttp
 import ccxt.async_support as ccxt
 import asyncio
@@ -57,48 +56,45 @@ class OrderExecutor:
         self.markets_loaded = False
 
     async def initialize(self):
-        """
-        Explicitly loads markets and performs a time sync check.
-        """
-        if not self.markets_loaded:
-            print("Performing initial setup for OrderExecutor...")
+        if self.markets_loaded:
+            return
+        print("Performing initial setup for OrderExecutor...")
+        try:
+            # We wrap ALL network-dependent startup calls in a single block.
+            print("  > Attempting to connect to Binance for setup...")
 
-            try:
-                print("  > Checking time synchronization with Binance server...")
-                server_time = await self.exchange.fetch_time()
-                local_time = int(time.time() * 1000)
-                time_diff = server_time - local_time
-                print(f"  > Binance Server Time: {server_time}, Local Time: {local_time}, Difference: {time_diff} ms")
+            # Step 1: Time Synchronization
+            print("    - Step 1: Checking time synchronization...")
+            server_time = await self.exchange.fetch_time()
+            local_time = int(time.time() * 1000)
+            time_diff = server_time - local_time
+            print(f"    - Time sync successful. Difference: {time_diff} ms")
+            if abs(time_diff) > 1000:
+                self.exchange.options['adjustForTimeDifference'] = True
 
-                if abs(time_diff) > 1000: # If difference is more than 1 second
-                    print(f"  > WARNING: System time is out of sync by {time_diff} ms. Applying offset.")
-                    # CCXT will automatically use this offset for future requests
-                    self.exchange.options['adjustForTimeDifference'] = True
-                else:
-                    print("  > System time is in sync.")
-
-            except Exception as e:
-                print(f"  > CRITICAL: Could not check time synchronization. Error: {e}")
-                print("  > Please ensure your system time is synchronized with an NTP server.")
-                # We can choose to raise an error here to halt startup
-                raise e
-
-            print("  > Loading exchange markets...")
+            # Step 2: Loading Markets
+            print("    - Step 2: Loading exchange markets...")
             await self.exchange.load_markets()
             self.markets_loaded = True
-            print("Exchange markets loaded successfully.")
+            print("  > Exchange setup successful. OrderExecutor is fully operational.")
+
+        except Exception as e:
+            print("\n" + "#"*80)
+            print("### CRITICAL STARTUP WARNING: COULD NOT CONNECT TO BINANCE API ###")
+            print(f"### Error: {e}")
+            print("### The application is in a DEGRADED state. ALL live trading will fail. ###")
+            print("#"*80 + "\n")
 
     async def close_connections(self):
         if self.exchange.session:
             await self.exchange.session.close()
-        # await self.exchange.close() # exchange.close() also closes the session
         print("OrderExecutor connection closed.")
 
     async def get_balance(self, currency: str = 'USDT') -> float:
         await self.initialize()
         try:
             balance = await self.exchange.fetch_balance()
-            return balance['free'][currency]
+            return balance['total'][currency]
         except Exception as e:
             print(f"Error fetching balance: {e}")
             return 0.0
@@ -113,6 +109,74 @@ class OrderExecutor:
         except Exception as e:
             print(f"Error setting leverage for {symbol}: {e}")
             return False
+
+    async def create_market_order(self, symbol: str, side: Literal['buy', 'sell'], amount: float,
+                                  position_side: Literal['LONG', 'SHORT']) -> Dict[str, Any] | None:
+        await self.initialize()
+        if not self.markets_loaded: return None
+        try:
+            params = {'positionSide': position_side}
+            order = await self.exchange.create_market_order(symbol, side, amount, params=params)
+            print(f"  > Market {side} order for {position_side} position created successfully. Order ID: {order['id']}")
+            return order
+        except Exception as e:
+            print(f"Error creating market order for {symbol}: {e}")
+            return None
+
+    async def create_stop_loss_order(self, symbol: str, side: Literal['buy', 'sell'], amount: float, stop_price: float,
+                                     position_side: Literal['LONG', 'SHORT']) -> Dict[str, Any] | None:
+        await self.initialize()
+        if not self.markets_loaded: return None
+        try:
+            params = {'stopPrice': stop_price, 'positionSide': position_side, 'reduceOnly': True}
+            order = await self.exchange.create_order(symbol, 'STOP_MARKET', side, amount, params=params)
+            print(f"  > Stop loss order created successfully. Order ID: {order['id']}")
+            return order
+        except Exception as e:
+            print(f"Error creating stop loss order for {symbol}: {e}")
+            return None
+
+    async def create_take_profit_order(self, symbol: str, side: Literal['buy', 'sell'], amount: float, price: float,
+                                       position_side: Literal['LONG', 'SHORT']) -> Dict[str, Any] | None:
+        await self.initialize()
+        if not self.markets_loaded: return None
+        try:
+            params = {'positionSide': position_side, 'reduceOnly': True}
+            order = await self.exchange.create_order(symbol, 'TAKE_PROFIT_MARKET', side, amount, price, params=params)
+            print(f"  > Take profit order created successfully. Order ID: {order['id']}")
+            return order
+        except Exception as e:
+            print(f"Error creating take profit order for {symbol}: {e}")
+            return None
+
+    async def cancel_order(self, order_id: str, symbol: str) -> bool:
+        await self.initialize()
+        if not self.markets_loaded: return False
+        try:
+            await self.exchange.cancel_order(order_id, symbol)
+            print(f"  > Order {order_id} cancelled successfully.")
+            return True
+        except ccxt.OrderNotFound:
+            print(f"  > Order {order_id} not found. It might have been already filled/cancelled.")
+            return True
+        except Exception as e:
+            print(f"  > Error cancelling order {order_id}: {e}")
+            return False
+
+    async def close_position_market(self, symbol: str, position_side: Literal['LONG', 'SHORT'], quantity: float) -> \
+    Dict[str, Any] | None:
+        await self.initialize()
+        if not self.markets_loaded: return None
+        side: Literal['buy', 'sell'] = 'sell' if position_side == 'LONG' else 'buy'
+        try:
+            params = {'positionSide': position_side, 'reduceOnly': True}
+            order = await self.exchange.create_market_order(symbol, side, quantity, params=params)
+            print(f"  > Market close order for {position_side} position sent successfully.")
+            return order
+        except Exception as e:
+            print(f"  > Error closing {position_side} position for {symbol}: {e}")
+            return None
+
 
     async def create_market_order_by_notional(self, symbol: str, side: Literal['buy', 'sell'], notional_usdt: float) -> \
     Dict[str, Any] | None:
@@ -148,52 +212,6 @@ class OrderExecutor:
             print(f"Error creating market order by notional value for {symbol}: {e}")
             return None
 
-    async def create_stop_loss_order(self, symbol: str, side: Literal['buy', 'sell'], amount: float,
-                                     stop_price: float) -> Dict[str, Any] | None:
-        await self.initialize()
-        try:
-            print(f"Creating stop loss {side} order for {amount:.8f} {symbol} at price {stop_price}...")
-
-            # Try different parameter combinations for compatibility
-            params_options = [
-                # Option 1: Basic stop loss with position side
-                {
-                    'stopPrice': stop_price,
-                    'positionSide': 'LONG' if side == 'sell' else 'SHORT',
-                    'timeInForce': 'GTC'
-                },
-                # Option 2: Basic stop loss with reduceOnly
-                {
-                    'stopPrice': stop_price,
-                    'reduceOnly': True,
-                    'timeInForce': 'GTC'
-                },
-                # Option 3: Minimal parameters
-                {
-                    'stopPrice': stop_price
-                }
-            ]
-
-            order = None
-            for i, params in enumerate(params_options):
-                try:
-                    print(f"  > Trying stop loss option {i+1}...")
-                    order = await self.exchange.create_order(symbol, 'STOP_MARKET', side, amount, params=params)
-                    print(f"  > Stop loss created successfully with option {i+1}")
-                    break
-                except Exception as e:
-                    print(f"  > Option {i+1} failed: {e}")
-                    if i == len(params_options) - 1:  # Last option
-                        raise e
-
-            if not order:
-                raise Exception("All stop loss parameter combinations failed")
-            print(f"  > Stop loss order created successfully. Order ID: {order['id']}")
-            return order
-        except Exception as e:
-            print(f"Error creating stop loss order for {symbol}: {e}")
-            return None
-
     async def get_open_positions(self, symbol: str) -> Dict[str, Any] | None:
         await self.initialize()
         try:
@@ -205,20 +223,6 @@ class OrderExecutor:
         except Exception as e:
             print(f"Error fetching open positions for {symbol}: {e}")
             return None
-
-    async def cancel_order(self, order_id: str, symbol: str) -> bool:
-        await self.initialize()
-        try:
-            print(f"Attempting to cancel order {order_id} for {symbol}...")
-            await self.exchange.cancel_order(order_id, symbol)
-            print(f"  > Order {order_id} cancelled successfully.")
-            return True
-        except ccxt.OrderNotFound:
-            print(f"  > Order {order_id} not found. It might have been already filled/cancelled.")
-            return True
-        except Exception as e:
-            print(f"  > Error cancelling order {order_id}: {e}")
-            return False
 
     async def close_market_position(self, symbol: str, position_side: Literal['LONG', 'SHORT'], quantity: float) -> \
     Dict[str, Any] | None:
@@ -255,4 +259,27 @@ class OrderExecutor:
             return order
         except Exception as e:
             print(f"  > Error closing position for {symbol}: {e}")
+            return None
+
+    async def get_open_position_by_symbol(self, symbol: str) -> Dict[str, Any] | None:
+        """
+        Fetches the current open position for a single symbol from the exchange.
+        Returns the position details if one exists, otherwise None.
+        """
+        await self.initialize()
+        if not self.markets_loaded: return None
+        try:
+            # fetch_positions can take a list of symbols
+            all_positions = await self.exchange.fetch_positions([symbol])
+
+            # Filter for positions that actually have a size
+            for position in all_positions:
+                # 'contracts' or 'size' can be used depending on exchange, ccxt standardizes to 'contracts'
+                size = position.get('contracts')
+                if size is not None and float(size) != 0:
+                    return position  # Return the first non-zero position found
+
+            return None  # No open position for this symbol
+        except Exception as e:
+            print(f"Error fetching open position for {symbol}: {e}")
             return None

@@ -79,9 +79,7 @@ class HistoricalOhlcv(Base):
     symbol = relationship("Symbol", back_populates="historical_data")
 
     __table_args__ = (
-        # Ensure that for a given symbol and timeframe, each candle's open time is unique.
         UniqueConstraint('symbol_id', 'timeframe', 'open_time', name='uq_symbol_timeframe_opentime'),
-        # Create a composite index for fast retrieval of time-series data for a specific symbol/timeframe.
         Index('ix_symbol_timeframe_opentime_desc', 'symbol_id', 'timeframe', open_time.desc()),
     )
 
@@ -105,11 +103,12 @@ class Position(Base):
 
     # --- Exchange Order Information ---
     entry_order_id = Column(String, unique=True)
-    # The SL order is critical. We need to track its ID to cancel/replace it.
     stop_loss_order_id = Column(String, unique=True)
+    take_profit_order_id = Column(String, unique=True, nullable=True)
 
     # --- Our Internal Risk Management ---
     initial_stop_loss_price = Column(Numeric(18, 8), nullable=False)
+    take_profit_price = Column(Numeric(18, 8), nullable=True)
 
     # --- Timestamps ---
     opened_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -1,8 +1,12 @@
 import itertools
 from typing import Dict, Any, List
+import backtrader as bt
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import os
 
-from .runner import run_parameterized_backtest
-from app.job_manager import update_task_progress  # <-- Import the update function
+# [MODIFIED] Import the new runner function
+from .runner import run_single_backtest_instance
+from app.job_manager import JobManager
 
 
 class GridSearchOptimizer:
@@ -10,56 +14,59 @@ class GridSearchOptimizer:
         self.base_config = base_config
         self.param_grid = param_grid
         self.results = []
+        # Determine the number of CPU cores to use, leaving one for the system
+        self.max_workers = max(1, os.cpu_count() - 1)
 
     def get_param_combinations(self):
         keys, values = zip(*self.param_grid.items())
         return [dict(zip(keys, v)) for v in itertools.product(*values)]
 
-    # The key change is here: it now accepts a task_id
-    def run_optimization(self, task_id: str):
+    def run_optimization(self, task_id: str, job_manager: JobManager, strategy_name: str):
         param_combinations = self.get_param_combinations()
         total_runs = len(param_combinations)
-        print(f"Task [{task_id}] Starting Grid Search: {total_runs} total runs.")
+        print(
+            f"Task [{task_id}] Starting PARALLEL Grid Search for {strategy_name}: {total_runs} runs on {self.max_workers} workers.")
 
-        for i, params in enumerate(param_combinations):
-            update_task_progress(
-                task_id,
-                current=i + 1,
-                total=total_runs,
-                step=f"Running with params: {params}"
-            )
-            print(f"\n--- Task [{task_id}] Running [{i + 1}/{total_runs}]: {params} ---")
-            current_config = self.base_config.copy()
-            current_config["strategy_params"] = params
+        completed_runs = 0
 
-            try:
-                result = run_parameterized_backtest(current_config)
+        # Use ProcessPoolExecutor to run backtests in parallel
+        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            # Create a future for each backtest run
+            futures = []
+            for params in param_combinations:
+                current_config = self.base_config.copy()
+                current_config["strategy_params"] = params
+                # Submit the runner function to the process pool
+                future = executor.submit(run_single_backtest_instance, strategy_name, current_config)
+                futures.append(future)
+
+            # Process results as they complete
+            for future in as_completed(futures):
+                result = future.result()
                 self.results.append(result)
-            except Exception as e:
-                # [FIX] Capture the full traceback on failure
-                import traceback
-                error_details = traceback.format_exc()
-                print(f"  > Task [{task_id}] Run failed for {params}: {e}")
-                # [FIX] Append a failure record to results
-                self.results.append({
-                    "config": current_config,
-                    "error": str(error_details)
-                })
+                completed_runs += 1
+
+                job_manager.update_task_progress(
+                    task_id,
+                    current=completed_runs,
+                    total=total_runs,
+                    step=f"Completed run {completed_runs}/{total_runs}"
+                )
+                print(f"--- Task [{task_id}] Completed [{completed_runs}/{total_runs}] ---")
 
         print(f"\n--- Task [{task_id}] Optimization Finished ---")
         return self.get_best_result()
 
     def get_best_result(self, metric: str = "sharpe_ratio"):
         if not self.results: return None
-        valid_results = [r for r in self.results if r.get(metric) is not None]
-        if not valid_results:
-            # [FIX] If no runs were successful, return a summary of errors
-            all_errors = [f"Params: {r['config']['strategy_params']}, Error: {r['error'][:200]}..."
-                          for r in self.results if 'error' in r]
-            return {
-                "error": "All backtest runs failed.",
-                "details": all_errors
-            }
+        # Filter out runs that resulted in an error
+        valid_results = [r for r in self.results if 'error' not in r and r.get(metric) is not None]
 
+        if not valid_results:
+            all_errors = [f"Params: {r['config']['strategy_params']}, Error: {r.get('error', 'Unknown')[:200]}..."
+                          for r in self.results if 'error' in r]
+            return {"error": "All backtest runs failed.", "details": all_errors}
+
+        # Find the best result based on the specified metric
         best = max(valid_results, key=lambda x: x.get(metric, -float('inf')))
         return best
