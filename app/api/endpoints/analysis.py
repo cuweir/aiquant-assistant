@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
-from typing import List
+from typing import List, Any, Dict
 
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -27,7 +27,6 @@ async def trigger_manual_analysis(
     """
     print(f"\n--- [MANUAL TRIGGER] Received request to analyze {trigger_input.symbol} ---")
 
-    # The service now returns the full report object, which we can directly return
     result = await service.generate_comprehensive_analysis(trigger_input.symbol)
 
     if result is None:
@@ -42,39 +41,15 @@ async def get_all_analyses_endpoint(
         service: AnalysisService = Depends(get_analysis_service)
 ):
     """
+    [FINAL & SIMPLIFIED]
     Fetches the most recent analysis results from the database.
+    The service layer now handles all data transformation.
     """
-    db_results = service.get_all_analyses_from_db(db=db, skip=0, limit=20)
-    response_list: List[AnalysisReport] = []
-    for r in db_results:
-        details_json = r.indicator_details or {}
+    # The service method now returns a list of dictionaries that are already
+    # perfectly formatted to match the AnalysisReport Pydantic model.
+    # No further processing is needed here.
+    results = service.get_all_analyses_from_db(db=db, skip=0, limit=20)
 
-        if not isinstance(details_json, dict):
-            print(f"[WARNING] Skipping malformed DB record {r.id}. 'indicator_details' is not a dictionary.")
-            continue
-
-        try:
-            report_data = {
-                # --- Core fields from the main table ---
-                "timestamp": r.timestamp,
-                "symbol": r.symbol.name,  # Get name from the relationship
-                "timeframe": r.timeframe,
-                "price": float(r.current_price),  # Convert Decimal to float
-                "signal": r.overall_signal,
-                "ai_analysis": r.llm_analysis,
-
-                # --- Nested fields from the JSONB details ---
-                "risk_management": details_json.get("risk_management"),
-                "confidence": details_json.get("confidence"),
-                "key_factors": details_json.get("key_factors"),
-                "snapshot": details_json.get("snapshot")
-            }
-
-            # Use Pydantic to validate the final constructed data
-            report = AnalysisReport.model_validate(report_data)
-            response_list.append(report)
-
-        except (ValidationError, TypeError) as e:
-            print(f"Skipping malformed DB record {r.id} due to validation error: {e}")
-            continue
-    return response_list
+    # We can directly return the results. FastAPI will automatically validate
+    # them against the response_model.
+    return results
