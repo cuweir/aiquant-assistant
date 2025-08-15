@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import List, Any, Dict
 
 from pydantic import ValidationError
@@ -26,12 +26,9 @@ async def trigger_manual_analysis(
     and returns the complete, new AnalysisReport.
     """
     print(f"\n--- [MANUAL TRIGGER] Received request to analyze {trigger_input.symbol} ---")
-
     result = await service.generate_comprehensive_analysis(trigger_input.symbol)
-
     if result is None:
         raise HTTPException(status_code=500, detail="Analysis failed or produced no result. Check server logs.")
-
     return result
 
 
@@ -41,15 +38,31 @@ async def get_all_analyses_endpoint(
         service: AnalysisService = Depends(get_analysis_service)
 ):
     """
-    [FINAL & SIMPLIFIED]
-    Fetches the most recent analysis results from the database.
-    The service layer now handles all data transformation.
+    Fetches the MOST RECENT analysis result for each monitored symbol.
     """
-    # The service method now returns a list of dictionaries that are already
-    # perfectly formatted to match the AnalysisReport Pydantic model.
-    # No further processing is needed here.
     results = service.get_all_analyses_from_db(db=db, skip=0, limit=20)
-
-    # We can directly return the results. FastAPI will automatically validate
-    # them against the response_model.
     return results
+
+
+@router.get("/analysis-history/{symbol}", response_model=List[AnalysisReport])
+async def get_analysis_history(
+        symbol: str,
+        hours: int = Query(12, ge=1, le=72),  # Default 12h, min 1h, max 72h
+        db: Session = Depends(get_db),
+        service: AnalysisService = Depends(get_analysis_service)
+):
+    """
+    Fetches the analysis history for a specific symbol over a given
+    number of past hours.
+    """
+    # FastAPI automatically handles the conversion of BTC-USDT to BTC/USDT if needed,
+    # but it's good practice to standardize.
+    formatted_symbol = symbol.upper().replace("-", "/")
+
+    history = service.get_analysis_history_from_db(db=db, symbol_name=formatted_symbol, hours=hours)
+
+    if not history:
+        # It's not an error if there's no history, just return an empty list.
+        return []
+
+    return history

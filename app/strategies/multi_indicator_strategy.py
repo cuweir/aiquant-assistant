@@ -120,21 +120,23 @@ class LongOnlyTrendStrategy(TradingStrategy):
 
 class AlphaRegimeStrategy(TradingStrategy):
     """
-    [FINAL PRODUCTION VERSION]
-    The final, most advanced strategy. It uses a sophisticated regime filter
-    to switch between long-only and short-only modes, and provides detailed
-    reasons for its decisions.
+    [FINAL & COMPLETE VERSION]
+    This strategy uses a sophisticated regime filter to switch between long-only
+    and short-only modes. It provides extremely detailed output, including raw
+    indicator values, for maximum observability in the frontend.
     """
 
     def __init__(self, params: Dict[str, Any]):
         self.p = params
-        # Set defaults for any missing parameters to ensure robustness
         self.p.setdefault('commander_ma_period', 200)
         self.p.setdefault('vol_filter_atr_period', 100)
         self.p.setdefault('vol_filter_lookback', 50)
         self.p.setdefault('buy_score_threshold', 3)
         self.p.setdefault('sell_score_threshold', -3)
-        # ... other defaults can be added here if needed
+        self.p.setdefault('low_vol_adx_threshold', 25)
+        self.p.setdefault('high_vol_adx_threshold', 25)
+        self.p.setdefault('rsi_oversold', 35)
+        self.p.setdefault('rsi_overbought', 65)
 
     async def generate_signals(self, df_signal: pd.DataFrame, df_regime: pd.DataFrame) -> Dict[str, Any] | None:
         df_signal = _clean_data(df_signal.copy())
@@ -144,51 +146,45 @@ class AlphaRegimeStrategy(TradingStrategy):
         if not indicators:
             return {"overall_signal": "INDICATOR_ERROR", "current_price": df_signal['close'].iloc[-1]}
 
-        latest = {name: s.iloc[-1] for name, s in indicators.items() if not s.empty and pd.notna(s.iloc[-1])}
-        previous = {name: s.iloc[-2] for name, s in indicators.items() if len(s) > 1 and pd.notna(s.iloc[-2])}
+        latest = {name: s.iloc[-1] for name, s in indicators.items() if
+                  s is not None and not s.empty and pd.notna(s.iloc[-1])}
+        previous = {name: s.iloc[-2] for name, s in indicators.items() if
+                    s is not None and len(s) > 1 and pd.notna(s.iloc[-2])}
         latest_close = df_signal['close'].iloc[-1]
 
         market_regime = self._get_market_regime(latest, df_regime)
-
         score_details = self._get_score_details(latest, previous, indicators)
-
         final_signal, rejection_reason = self._get_final_decision(market_regime, score_details)
-
         exit_signal = self._get_exit_signal(latest)
         suggested_sl = self._calculate_stop_loss(final_signal, latest_close, latest)
 
         return {
-            "overall_signal": final_signal,
-            "exit_signal": exit_signal,
-            "rejection_reason": rejection_reason,
-            "current_price": latest_close,
-            "market_regime": market_regime,
-            "score_details": score_details,
+            "overall_signal": final_signal, "exit_signal": exit_signal,
+            "rejection_reason": rejection_reason, "current_price": latest_close,
+            "market_regime": market_regime, "score_details": score_details,
             "risk_management": {"suggested_sl": suggested_sl}
         }
 
     def _calculate_all_indicators(self, df_signal: pd.DataFrame, df_regime: pd.DataFrame) -> Dict[str, pd.Series]:
         i = {}
-        # Signal TF
         i['vol_atr'] = df_signal.ta.atr(length=self.p['vol_atr_period'], append=False)
         i['low_vol_ma_short'] = df_signal.ta.sma(length=self.p['low_vol_ma_short'])
         i['low_vol_ma_long'] = df_signal.ta.sma(length=self.p['low_vol_ma_long'])
         i['high_vol_ma_short'] = df_signal.ta.sma(length=self.p['high_vol_ma_short'])
         i['high_vol_ma_long'] = df_signal.ta.sma(length=self.p['high_vol_ma_long'])
         adx_df = df_signal.ta.adx(length=self.p['adx_period'])
-        if adx_df is not None: i['adx'] = adx_df[f'ADX_{self.p["adx_period"]}']
+        if adx_df is not None and not adx_df.empty: i['adx'] = adx_df[f'ADX_{self.p["adx_period"]}']
         i['rsi'] = df_signal.ta.rsi(length=self.p['rsi_period'])
         macd_df = df_signal.ta.macd(fast=self.p['macd_fast'], slow=self.p['macd_slow'], signal=self.p['macd_signal'])
-        if macd_df is not None:
+        if macd_df is not None and not macd_df.empty:
             i['macd'] = macd_df[f'MACD_{self.p["macd_fast"]}_{self.p["macd_slow"]}_{self.p["macd_signal"]}']
             i['macd_signal'] = macd_df[f'MACDs_{self.p["macd_fast"]}_{self.p["macd_slow"]}_{self.p["macd_signal"]}']
         df_with_atr = df_signal.copy();
         df_with_atr['atr'] = i.get('vol_atr')
         i['vol_atr_ma'] = df_with_atr.ta.sma(close='atr', length=self.p['vol_atr_ma_period'])
-        # Regime TF
         i['commander_ma'] = df_regime.ta.sma(length=self.p['commander_ma_period'])
         regime_atr = df_regime.ta.atr(length=self.p['vol_filter_atr_period'])
-        if regime_atr is not None:
+        if regime_atr is not None and not regime_atr.empty:
             i['regime_atr'] = regime_atr
             i['regime_atr_highest'] = regime_atr.rolling(window=self.p['vol_filter_lookback']).max()
         return i
@@ -207,7 +203,6 @@ class AlphaRegimeStrategy(TradingStrategy):
                                               self.p['high_vol_adx_threshold']) if is_high_vol else (
             latest.get('low_vol_ma_short', 0), latest.get('low_vol_ma_long', 0), latest.get('adx', 0),
             self.p['low_vol_adx_threshold'])
-
         details['ma_cross_score'] = 1 if ma_short > ma_long else -1
         details['macd_cross_score'] = 2 if previous.get('macd', 0) < previous.get('macd_signal', 0) and latest.get(
             'macd', 0) > latest.get('macd_signal', 0) else -2 if previous.get('macd', 0) > previous.get('macd_signal',
@@ -217,40 +212,49 @@ class AlphaRegimeStrategy(TradingStrategy):
             'rsi_oversold'] else -1 if previous.get('rsi', 50) > self.p['rsi_overbought'] and latest.get('rsi', 50) < \
                                        self.p['rsi_overbought'] else 0
         details['total_score'] = details['ma_cross_score'] + details['macd_cross_score'] + details['rsi_score']
-
-        ma_series = indicators['high_vol_ma_short' if is_high_vol else 'low_vol_ma_short']
-        y_vals = ma_series.iloc[-self.p['slope_lookback_period']:].values
-        details['slope'] = np.polyfit(np.arange(len(y_vals)), y_vals, 1)[0] if len(y_vals) == self.p[
-            'slope_lookback_period'] else 0
-
-        details['adx'] = adx
+        ma_series = indicators.get('high_vol_ma_short' if is_high_vol else 'low_vol_ma_short')
+        if ma_series is not None and len(ma_series) >= self.p['slope_lookback_period']:
+            y_vals = ma_series.iloc[-self.p['slope_lookback_period']:].values
+            details['slope'] = np.polyfit(np.arange(len(y_vals)), y_vals, 1)[0] if len(y_vals) == self.p[
+                'slope_lookback_period'] else 0
+        else:
+            details['slope'] = 0
+        details['adx'] = adx;
+        details['adx_thresh'] = adx_thresh;
         details['adx_ok'] = adx > adx_thresh
         details['slope_ok_long'] = details['slope'] > self.p['slope_min_threshold']
         details['slope_ok_short'] = details['slope'] < -self.p['slope_min_threshold']
-
+        details['rsi_value'] = latest.get('rsi');
+        details['rsi_oversold_thresh'] = self.p.get('rsi_oversold');
+        details['rsi_overbought_thresh'] = self.p.get('rsi_overbought')
+        details['macd_value'] = latest.get('macd');
+        details['macd_signal_value'] = latest.get('macd_signal')
+        details['ma_short_value'] = ma_short;
+        details['ma_long_value'] = ma_long
         return details
 
     def _get_final_decision(self, regime: str, scores: Dict) -> Tuple[str, str | None]:
+        # [THE FIX] Refined decision logic for clearer rejection reasons.
         if regime in ["CHAOS", "CHOPPY"]:
-            return "NEUTRAL", f"Market regime is '{regime}', all new entries are forbidden."
+            return "NEUTRAL", f"Market regime is '{regime}', new entries forbidden."
 
         if regime == "BULL":
-            if scores['total_score'] < self.p['buy_score_threshold']:
-                return "NEUTRAL", f"Score of {scores['total_score']} did not meet BUY threshold of {self.p['buy_score_threshold']}."
-            if not scores['adx_ok']:
-                return "REJECTED", f"ADX ({scores['adx']:.2f}) is below strength threshold."
-            if not scores['slope_ok_long']:
-                return "REJECTED", f"MA slope ({scores['slope']:.2f}) is not positive."
-            return "POTENTIAL_BUY", None  # All checks passed
+            if scores['total_score'] >= self.p['buy_score_threshold']:
+                if not scores[
+                    'adx_ok']: return "REJECTED", f"ADX strength ({scores['adx']:.2f}) is below threshold ({scores['adx_thresh']})."
+                if not scores['slope_ok_long']: return "REJECTED", f"MA slope ({scores['slope']:.2f}) is not positive."
+                return "POTENTIAL_BUY", None
+            else:
+                return "NEUTRAL", f"In BULL regime, score ({scores['total_score']}) is below BUY threshold ({self.p['buy_score_threshold']})."
 
         if regime == "BEAR":
-            if scores['total_score'] > self.p['sell_score_threshold']:
-                return "NEUTRAL", f"Score of {scores['total_score']} did not meet SELL threshold of {self.p['sell_score_threshold']}."
-            if not scores['adx_ok']:
-                return "REJECTED", f"ADX ({scores['adx']:.2f}) is below strength threshold."
-            if not scores['slope_ok_short']:
-                return "REJECTED", f"MA slope ({scores['slope']:.2f}) is not negative."
-            return "POTENTIAL_SELL", None  # All checks passed
+            if scores['total_score'] <= self.p['sell_score_threshold']:
+                if not scores[
+                    'adx_ok']: return "REJECTED", f"ADX strength ({scores['adx']:.2f}) is below threshold ({scores['adx_thresh']})."
+                if not scores['slope_ok_short']: return "REJECTED", f"MA slope ({scores['slope']:.2f}) is not negative."
+                return "POTENTIAL_SELL", None
+            else:
+                return "NEUTRAL", f"In BEAR regime, score ({scores['total_score']}) is above SELL threshold ({self.p['sell_score_threshold']})."
 
         return "NEUTRAL", "No valid trading regime detected."
 

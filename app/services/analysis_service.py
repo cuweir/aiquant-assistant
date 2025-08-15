@@ -10,7 +10,7 @@ from ..core.config import settings
 from ..llm_providers.base import LLMStrategy
 from ..db.session import SessionLocal
 from ..db.models import AnalysisResult, Symbol, Strategy
-from ..models.schemas import AnalysisReport  # Import the new simplified model
+from ..models.schemas import AnalysisReport
 from ..utils.formatters import format_price_dynamically
 from .backtest.db_data_fetcher import fetch_df_from_postgres
 from .parameter_manager import ParameterManager
@@ -78,7 +78,6 @@ class AnalysisService:
 
             strategy_record = self._get_or_create_strategy(db, strategy_name, symbol_params)
             symbol_record = self._get_or_create_symbol(db, symbol_name)
-
             serializable_result = make_dict_json_serializable(strategy_result)
 
             db_analysis_result = AnalysisResult(
@@ -98,22 +97,19 @@ class AnalysisService:
 
             await self.trading_service.process_signal(db, symbol_record, strategy_result)
 
-            # [THE FIX] Construct the API response using the new simplified Pydantic model.
-            # All the rich details from the strategy are now correctly placed in the 'snapshot' field.
             api_response = AnalysisReport(
                 timestamp=db_analysis_result.timestamp,
                 symbol=symbol_name,
                 timeframe=settings.SIGNAL_TIMEFRAME,
                 price=serializable_result['current_price'],
                 signal=serializable_result['overall_signal'],
-                snapshot=serializable_result  # Pass the entire result blob to the snapshot
+                snapshot=serializable_result
             )
-
             return api_response.model_dump()
 
         except Exception as e:
             print(f"  > An unexpected error during analysis for {symbol_name}: {e}")
-            import traceback;
+            import traceback
             traceback.print_exc()
             return None
         finally:
@@ -140,6 +136,37 @@ class AnalysisService:
                 }
                 response_list.append(report_dict)
             except Exception as e:
-                print(f"Skipping malformed DB record {r.id} due to error: {e}")
+                print(f"Skipping malformed DB record {r.id} for API response due to error: {e}")
+                continue
+        return response_list
+
+    def get_analysis_history_from_db(self, db: Session, symbol_name: str, hours: int) -> List[Dict[str, Any]]:
+        symbol_record = db.query(Symbol).filter(Symbol.name == symbol_name).first()
+        if not symbol_record: return []
+
+        start_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+
+        db_results = db.query(AnalysisResult).filter(
+            AnalysisResult.symbol_id == symbol_record.id,
+            AnalysisResult.timestamp >= start_time
+        ).order_by(AnalysisResult.timestamp.asc()).all()
+
+        response_list = []
+        for r in db_results:
+            try:
+                details = r.indicator_details or {}
+                if not isinstance(details, dict): continue
+
+                report_dict = {
+                    "timestamp": r.timestamp.isoformat(),
+                    "symbol": symbol_name,
+                    "timeframe": r.timeframe,
+                    "price": float(r.current_price),
+                    "signal": r.overall_signal,
+                    "snapshot": details  # Pass the entire blob as the snapshot
+                }
+                response_list.append(report_dict)
+            except Exception as e:
+                print(f"Skipping malformed DB record {r.id} for history response due to error: {e}")
                 continue
         return response_list
