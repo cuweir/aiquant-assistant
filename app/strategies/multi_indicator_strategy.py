@@ -158,12 +158,49 @@ class AlphaRegimeStrategy(TradingStrategy):
         exit_signal = self._get_exit_signal(latest)
         suggested_sl = self._calculate_stop_loss(final_signal, latest_close, latest)
 
+        self._log_decision_process(df_signal.index[-1], market_regime, score_details, final_signal, rejection_reason)
+
         return {
             "overall_signal": final_signal, "exit_signal": exit_signal,
             "rejection_reason": rejection_reason, "current_price": latest_close,
             "market_regime": market_regime, "score_details": score_details,
             "risk_management": {"suggested_sl": suggested_sl}
         }
+
+    def _log_decision_process(self, timestamp, regime, scores, signal, reason):
+        """Prints a detailed report of the strategy's thought process."""
+        print("\n" + "-" * 60)
+        print(f"ALPHA STRATEGY DEBRIEFING | {timestamp}")
+        print("-" * 60)
+        print(f"1. REGIME ANALYSIS (THE GENERAL'S ORDER):")
+        print(f"   - Market Regime: {regime}")
+
+        print(f"\n2. SIGNAL ENGINE (SCORE CALCULATION):")
+        print(
+            f"   - MA Cross Score: {scores['ma_cross_score']:>2}  (Short MA: {scores['ma_short_value']:.2f}, Long MA: {scores['ma_long_value']:.2f})")
+        print(
+            f"   - MACD Cross Score: {scores['macd_cross_score']:>2}  (MACD: {scores['macd_value']:.2f}, Signal: {scores['macd_signal_value']:.2f})")
+        print(f"   - RSI Score: {scores['rsi_score']:>2}  (RSI: {scores['rsi_value']:.2f})")
+        print(f"   ---------------------------------")
+        print(f"   - TOTAL SCORE: {scores['total_score']:>5}")
+
+        print(f"\n3. GATEKEEPER CHECKS:")
+        print(
+            f"   - ADX Check: {'PASS' if scores['adx_ok'] else 'FAIL'} (Value: {scores['adx']:.2f}, Threshold: {scores['adx_thresh']})")
+        if regime == "BULL":
+            print(
+                f"   - Slope Check (Long): {'PASS' if scores['slope_ok_long'] else 'FAIL'} (Slope: {scores['slope']:.2f})")
+        elif regime == "BEAR":
+            print(
+                f"   - Slope Check (Short): {'PASS' if scores['slope_ok_short'] else 'FAIL'} (Slope: {scores['slope']:.2f})")
+        else:
+            print(f"   - Slope Check: N/A (Regime is not BULL or BEAR)")
+
+        print(f"\n4. FINAL VERDICT:")
+        print(f"   - Signal: {signal}")
+        if reason:
+            print(f"   - Reason: {reason}")
+        print("-" * 60)
 
     def _calculate_all_indicators(self, df_signal: pd.DataFrame, df_regime: pd.DataFrame) -> Dict[str, pd.Series]:
         i = {}
@@ -204,8 +241,8 @@ class AlphaRegimeStrategy(TradingStrategy):
             latest.get('low_vol_ma_short', 0), latest.get('low_vol_ma_long', 0), latest.get('adx', 0),
             self.p['low_vol_adx_threshold'])
         details['ma_cross_score'] = 1 if ma_short > ma_long else -1
-        details['macd_cross_score'] = 2 if previous.get('macd', 0) < previous.get('macd_signal', 0) and latest.get(
-            'macd', 0) > latest.get('macd_signal', 0) else -2 if previous.get('macd', 0) > previous.get('macd_signal',
+        details['macd_cross_score'] = 1 if previous.get('macd', 0) < previous.get('macd_signal', 0) and latest.get(
+            'macd', 0) > latest.get('macd_signal', 0) else -1 if previous.get('macd', 0) > previous.get('macd_signal',
                                                                                                         0) and latest.get(
             'macd', 0) < latest.get('macd_signal', 0) else 0
         details['rsi_score'] = 1 if previous.get('rsi', 50) < self.p['rsi_oversold'] and latest.get('rsi', 50) > self.p[
@@ -219,8 +256,8 @@ class AlphaRegimeStrategy(TradingStrategy):
                 'slope_lookback_period'] else 0
         else:
             details['slope'] = 0
-        details['adx'] = adx;
-        details['adx_thresh'] = adx_thresh;
+        details['adx'] = adx
+        details['adx_thresh'] = adx_thresh
         details['adx_ok'] = adx > adx_thresh
         details['slope_ok_long'] = details['slope'] > self.p['slope_min_threshold']
         details['slope_ok_short'] = details['slope'] < -self.p['slope_min_threshold']
