@@ -50,7 +50,7 @@ class Settings:
     RISK_PER_TRADE_PERCENT: float = 0.03  # 1% for live testing (very conservative)
 
     # The default leverage to apply to all trades.
-    LEVERAGE: int = 20  # 3x leverage for live testing (much safer)
+    LEVERAGE: int = 10  # 3x leverage for live testing (much safer)
 
     # The maximum number of positions the bot is allowed to hold open simultaneously.
     MAX_OPEN_POSITIONS: int = 4  # Only 1 position for live testing

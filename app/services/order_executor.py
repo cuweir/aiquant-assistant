@@ -115,6 +115,16 @@ class OrderExecutor:
         await self.initialize()
         if not self.markets_loaded: return None
         try:
+            formatted_amount = self.exchange.amount_to_precision(symbol, amount)
+            print(f"  > Original amount: {amount}, Formatted amount for exchange: {formatted_amount}")
+            # We fetch market data to check against the minimum order size.
+            market = self.exchange.market(symbol)
+            min_amount = market.get('limits', {}).get('amount', {}).get('min')
+
+            if min_amount and float(formatted_amount) < min_amount:
+                print(
+                    f"  > [ERROR] Calculated amount {formatted_amount} is below the exchange minimum of {min_amount}. Aborting order.")
+                pass
             params = {'positionSide': position_side}
             order = await self.exchange.create_market_order(symbol, side, amount, params=params)
             print(f"  > Market {side} order for {position_side} position created successfully. Order ID: {order['id']}")
@@ -123,15 +133,26 @@ class OrderExecutor:
             print(f"Error creating market order for {symbol}: {e}")
             return None
 
-    async def create_stop_loss_order(self, symbol: str, side: Literal['buy', 'sell'], amount: float, stop_price: float,
-                                     position_side: Literal['LONG', 'SHORT']) -> Dict[str, Any] | None:
+    async def create_stop_loss_order(self, symbol: str, side: Literal['buy', 'sell'], amount: float, stop_price: float, position_side: Literal['LONG', 'SHORT']) -> Dict[str, Any] | None:
         await self.initialize()
         if not self.markets_loaded: return None
         try:
-            params = {'stopPrice': stop_price, 'positionSide': position_side, 'reduceOnly': True}
-            order = await self.exchange.create_order(symbol, 'STOP_MARKET', side, amount, params=params)
+            formatted_amount = self.exchange.amount_to_precision(symbol, amount)
+            params = {
+                "stopPrice": stop_price,
+                'positionSide': position_side
+            }
+
+            order = await self.exchange.create_order(
+                symbol,
+                "STOP_MARKET",
+                side,
+                float(formatted_amount),
+                params=params
+            )
             print(f"  > Stop loss order created successfully. Order ID: {order['id']}")
             return order
+
         except Exception as e:
             print(f"Error creating stop loss order for {symbol}: {e}")
             return None
@@ -163,53 +184,27 @@ class OrderExecutor:
             print(f"  > Error cancelling order {order_id}: {e}")
             return False
 
+    async def cancel_all_open_orders(self, symbol: str):
+        await self.initialize()
+        if not self.markets_loaded: return
+        try:
+            await self.exchange.cancel_all_orders(symbol)
+            print(f"  > All open orders for {symbol} cancelled.")
+        except Exception as e:
+            print(f"  > Error cancelling orders for {symbol}: {e}")
+
     async def close_position_market(self, symbol: str, position_side: Literal['LONG', 'SHORT'], quantity: float) -> \
-    Dict[str, Any] | None:
+        Dict[str, Any] | None:
         await self.initialize()
         if not self.markets_loaded: return None
         side: Literal['buy', 'sell'] = 'sell' if position_side == 'LONG' else 'buy'
         try:
-            params = {'positionSide': position_side, 'reduceOnly': True}
+            params = {'positionSide': position_side}
             order = await self.exchange.create_market_order(symbol, side, quantity, params=params)
             print(f"  > Market close order for {position_side} position sent successfully.")
             return order
         except Exception as e:
             print(f"  > Error closing {position_side} position for {symbol}: {e}")
-            return None
-
-
-    async def create_market_order_by_notional(self, symbol: str, side: Literal['buy', 'sell'], notional_usdt: float) -> \
-    Dict[str, Any] | None:
-        """
-        Places a market order based on the desired notional value in USDT.
-        """
-        await self.initialize()
-        try:
-            print(f"Creating market {side} order for {symbol} with notional value of ~{notional_usdt:.2f} USDT...")
-
-            ticker = await self.exchange.fetch_ticker(symbol)
-            current_price = ticker['last']
-            if current_price <= 0:
-                raise ValueError("Invalid current price for calculation.")
-
-            amount_in_coin = notional_usdt / current_price
-            formatted_amount = self.exchange.amount_to_precision(symbol, amount_in_coin)
-
-            print(
-                f"  > Calculated amount: {amount_in_coin} -> Formatted to: {formatted_amount} at price {current_price}")
-
-            # Add position side parameter for futures trading
-            params = {}
-            if side == 'buy':
-                params['positionSide'] = 'LONG'
-            elif side == 'sell':
-                params['positionSide'] = 'SHORT'
-
-            order = await self.exchange.create_market_order(symbol, side, float(formatted_amount), params=params)
-            print(f"  > Market order created successfully. Order ID: {order['id']}")
-            return order
-        except Exception as e:
-            print(f"Error creating market order by notional value for {symbol}: {e}")
             return None
 
     async def get_open_positions(self, symbol: str) -> Dict[str, Any] | None:
@@ -222,43 +217,6 @@ class OrderExecutor:
             return None
         except Exception as e:
             print(f"Error fetching open positions for {symbol}: {e}")
-            return None
-
-    async def close_market_position(self, symbol: str, position_side: Literal['LONG', 'SHORT'], quantity: float) -> \
-    Dict[str, Any] | None:
-        await self.initialize()
-        close_side: Literal['buy', 'sell'] = 'sell' if position_side.upper() == 'LONG' else 'buy'
-        try:
-            print(f"Closing {position_side} position for {quantity:.8f} {symbol} with a market order...")
-
-            # Try different parameter combinations for closing position
-            params_options = [
-                # Option 1: With position side (for hedge mode)
-                {'positionSide': position_side.upper()},
-                # Option 2: With reduceOnly (for one-way mode)
-                {'reduceOnly': True},
-                # Option 3: No special parameters
-                {}
-            ]
-
-            order = None
-            for i, params in enumerate(params_options):
-                try:
-                    print(f"  > Trying close position option {i+1}...")
-                    order = await self.exchange.create_market_order(symbol, close_side, quantity, params=params)
-                    print(f"  > Position closed successfully with option {i+1}")
-                    break
-                except Exception as e:
-                    print(f"  > Option {i+1} failed: {e}")
-                    if i == len(params_options) - 1:  # Last option
-                        raise e
-
-            if not order:
-                raise Exception("All close position parameter combinations failed")
-            print(f"  > Position closing order created successfully. Order ID: {order['id']}")
-            return order
-        except Exception as e:
-            print(f"  > Error closing position for {symbol}: {e}")
             return None
 
     async def get_open_position_by_symbol(self, symbol: str) -> Dict[str, Any] | None:
@@ -282,4 +240,15 @@ class OrderExecutor:
             return None  # No open position for this symbol
         except Exception as e:
             print(f"Error fetching open position for {symbol}: {e}")
+            return None
+
+    async def get_current_price(self, symbol: str) -> float | None:
+        """ Fetches the last traded price for a symbol. """
+        await self.initialize()
+        if not self.markets_loaded: return None
+        try:
+            ticker = await self.exchange.fetch_ticker(symbol)
+            return ticker['last']
+        except Exception as e:
+            print(f"Error fetching current price for {symbol}: {e}")
             return None

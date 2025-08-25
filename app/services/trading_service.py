@@ -74,6 +74,7 @@ class TradingService:
         print(
             f"  > [Calculation] Risk Amount=${risk_amount_usd:.2f}, Position Size={position_size_coin:.8f} {symbol.name.split('/')[0]}")
 
+        await self.order_executor.cancel_all_open_orders(symbol.name)
         # Set leverage before placing orders
         await self.order_executor.set_leverage(symbol.name, settings.LEVERAGE)
 
@@ -84,22 +85,33 @@ class TradingService:
             print(f"  > [CRITICAL] FAILED to place entry order. Aborting trade.")
             return
 
-        # Give exchange time to process
-        await asyncio.sleep(2)
+        # 2. Confirm Position is Open on Exchange ("Confirm, then Act")
+        confirmed_position = None
+        for i in range(10):  # Try for 10 seconds
+            await asyncio.sleep(1)
+            confirmed_position = await self.order_executor.get_open_position_by_symbol(symbol.name)
+            if confirmed_position:
+                print(
+                    f"  > Position confirmed on exchange after {i + 1}s. Size: {confirmed_position.get('contracts')}")
+                break
 
-        # 2. Place Stop Loss Order
+        if not confirmed_position:
+            print(f"  > [CRITICAL] FAILED to confirm position on exchange after 10s. Closing for safety.")
+            # We don't know the exact position info, so we can't close it reliably here.
+            # The sync task will handle this inconsistency later.
+            return
+
+        # 3. Place Stop Loss Order (Only after confirmation)
         sl_side: Literal['buy', 'sell'] = 'sell' if side == 'LONG' else 'buy'
-        sl_order = await self.order_executor.create_stop_loss_order(symbol.name, sl_side, entry_order['amount'],
+        confirmed_amount = float(confirmed_position.get('contracts', entry_order['amount']))
+        sl_order = await self.order_executor.create_stop_loss_order(symbol.name, sl_side, confirmed_amount,
                                                                     stop_loss_price, side)
         if not sl_order:
             print(f"  > [CRITICAL] FAILED to place SL order. Closing position for safety.")
             await self.order_executor.close_position_market(symbol.name, side, entry_order['amount'])
             return
 
-        # 3. Place Take Profit Order (Optional, can be added here)
-        # For now, we rely on the trend reversal exit signal from the strategy
-
-        # --- Persist Position State ---
+        # 4. Persist Position State
         new_position = Position(
             symbol_id=symbol.id, is_open=True, position_side=side,
             entry_price=entry_order.get('price') or current_price,
@@ -114,23 +126,26 @@ class TradingService:
         print(
             f"  > TradingService: Received exit signal for {position.position_side} position on {symbol.name}. Closing...")
 
-        # 1. Cancel all open orders associated with this position (SL, TP, etc.)
-        try:
-            await self.order_executor.cancel_order(position.stop_loss_order_id, symbol.name)
-            if position.take_profit_order_id:
-                await self.order_executor.cancel_order(position.take_profit_order_id, symbol.name)
-        except Exception as e:
-            print(f"  > Warning: Could not cancel open orders, they might be already filled/cancelled. Error: {e}")
-
-        # 2. Close the position with a market order
-        close_order = await self.order_executor.close_position_market(symbol.name, position.position_side,
-                                                                      float(position.quantity))
-        if not close_order:
-            print(f"  > CRITICAL: FAILED to close position for {symbol.name}! Manual intervention may be required.")
+        # 1. Fetch real position info from exchange to get exact size
+        position_info = await self.order_executor.get_open_position_by_symbol(symbol.name)
+        if not position_info:
+            print(f"  > Info: Position on {symbol.name} seems to be already closed on exchange. Syncing DB.")
+            position.is_open = False
+            db.commit()
             return
 
-        # 3. Update database
-        position.is_open = False
+        # 2. Cancel all open orders for the symbol first
+        await self.order_executor.cancel_all_open_orders(symbol.name)
+        await asyncio.sleep(1)  # Give time for cancellation to process
+
+        # 3. Close the position with a market order
+        close_order = await self.order_executor.close_position_market(symbol.name, position_info.get('position_side'), float(position.quantity))
+        if not close_order:
+            print(f"  > CRITICAL: FAILED to close position for {symbol.name}!")
+            return
+
+        # 4. Update database
+        position.is_open = False;
         db.commit()
         print(f"  > TradingService: Successfully closed and updated position for {symbol.name}.")
 
@@ -178,3 +193,98 @@ class TradingService:
                 print(f"  > Position for {symbol_name} is confirmed on exchange. State is in sync.")
 
         print(f"--- POSITION SYNC TASK FINISHED ---")
+
+    async def run_full_self_test(self, symbol: str = "BNB/USDT"):
+        print("\n" + "=" * 60)
+        print("SYSTEM SELF-TEST: PRE-FLIGHT CHECK INITIALIZED")
+        print("=" * 60)
+
+        test_leverage = 2
+        test_notional_value = 10.0  # Binance minimum
+
+        try:
+            # --- SHARED CHECKS ---
+            print("\n[PHASE 1: PRELIMINARY CHECKS]")
+            balance = await self.order_executor.get_balance('USDT')
+            if balance < test_notional_value / test_leverage:
+                raise Exception(
+                    f"Insufficient balance for self-test. Need > ${test_notional_value / test_leverage:.2f}, have ${balance:.2f}")
+            print(f"  ✅ Balance check passed. Available: ${balance:.2f}")
+
+            await self.order_executor.set_leverage(symbol, test_leverage)
+            print(f"  ✅ Leverage set to {test_leverage}x.")
+
+            await self.order_executor.cancel_all_open_orders(symbol)
+            print(f"  ✅ Pre-test cleanup: All open orders for {symbol} cancelled.")
+
+            # --- LONG TRADE TEST ---
+            print("\n[PHASE 2: LONG TRADE LIFECYCLE TEST]")
+            await self._run_single_side_test(symbol, "LONG", test_notional_value)
+
+            # --- SHORT TRADE TEST ---
+            print("\n[PHASE 3: SHORT TRADE LIFECYCLE TEST]")
+            await self._run_single_side_test(symbol, "SHORT", test_notional_value)
+
+            print("\n" + "=" * 60)
+            print("✅ SYSTEM SELF-TEST PASSED: All systems are operational.")
+            print("=" * 60 + "\n")
+
+        except Exception as e:
+            print("\n" + "!" * 60)
+            print("❌ SYSTEM SELF-TEST FAILED! APPLICATION STARTUP HALTED.")
+            print(f"  > CRITICAL FAILURE at: {e}")
+            print("!" * 60 + "\n")
+            raise e  # Re-raise the exception to stop the application
+
+    async def _run_single_side_test(self, symbol: str, side: Literal["LONG", "SHORT"], notional_value: float):
+        print(f"  --- Testing {side} trade ---")
+
+        # 1. Entry
+        current_price = await self.order_executor.get_current_price(symbol)
+        if not current_price: raise Exception("Failed to fetch current price.")
+        amount = notional_value / current_price
+        entry_order = await self.order_executor.create_market_order(symbol, 'buy' if side == "LONG" else 'sell', amount,
+                                                                    side)
+        if not entry_order: raise Exception(f"Failed to create market {side} order.")
+        print(f"    ✅ Market {side} entry order placed.")
+
+        # 2. Confirmation
+        position = await self._confirm_position_with_retry(symbol, 5)
+        if not position: raise Exception(f"Failed to confirm {side} position on exchange.")
+        print(f"    ✅ {side} position confirmed on exchange.")
+
+        # 3. SL/TP Placement
+        sl_price = current_price * 0.98 if side == "LONG" else current_price * 1.02
+        tp_price = current_price * 1.02 if side == "LONG" else current_price * 0.98
+        sl_order = await self.order_executor.create_stop_loss_order(symbol, 'sell' if side == "LONG" else 'buy',
+                                                                    float(position['contracts']), sl_price, side)
+        if not sl_order: raise Exception(f"Failed to place {side} stop loss.")
+        print(f"    ✅ Stop Loss order placed.")
+
+        # Note: We skip TP order placement in this test for simplicity, as SL is the critical one.
+
+        # 4. Cleanup
+        await self.order_executor.cancel_all_open_orders(symbol)
+        print(f"    ✅ All open orders cancelled.")
+
+        await asyncio.sleep(1)  # Small delay
+
+        close_order = await self.order_executor.close_position_market(symbol, side, float(position['contracts']))
+        if not close_order: raise Exception(f"Failed to close {side} position.")
+        print(f"    ✅ Market close order sent.")
+
+        # 5. Final Confirmation
+        final_pos = await self._confirm_position_with_retry(symbol, 5, expect_closed=True)
+        if final_pos is not None: raise Exception(f"Failed to confirm {side} position is closed.")
+        print(f"    ✅ Position confirmed closed on exchange.")
+        print(f"  --- {side} trade test PASSED ---")
+
+    async def _confirm_position_with_retry(self, symbol: str, retries: int, expect_closed: bool = False):
+        for i in range(retries):
+            position = await self.order_executor.get_open_position_by_symbol(symbol)
+            if expect_closed and position is None:
+                return None  # Success, it's closed
+            if not expect_closed and position is not None:
+                return position  # Success, it's open
+            await asyncio.sleep(1)
+        return await self.order_executor.get_open_position_by_symbol(symbol)

@@ -48,7 +48,6 @@ async def scheduled_position_sync_task():
     finally:
         db.close()
 
-# [NEW] Create a scheduled job for cleaning up old tasks
 def scheduled_task_cleanup_job():
     """The function the scheduler will run to clean up old task results from memory."""
     print(f"\n--- TASK CLEANUP JOB RUNNING at {pd.Timestamp.now(tz='UTC')} ---")
@@ -103,23 +102,7 @@ async def lifespan(app: FastAPI):
     print("Scheduler: 1-Minute Position Sync Job scheduled.")
 
     scheduler.start()
-    print("Scheduler started.")
-
-    # --- [CRITICAL FIX] IMMEDIATE VALIDATION LOGIC ---
-    print("\n" + "=" * 50)
-    print("RUNNING IMMEDIATE VALIDATION TASKS ON STARTUP")
-    print("=" * 50 + "\n")
-
-    print("--- Running initial data update... ---")
-    await scheduled_data_update_task()
-    print("--- Initial data update complete. ---\n")
-
-    await asyncio.sleep(2)
-
-    print("--- Running initial analysis task for immediate verification... ---")
-    await scheduled_analysis_task()
-    print("--- Initial analysis task complete. The system will now run on its schedule. ---")
-    print("=" * 50 + "\n")
+    print("Scheduler started. The system is now fully operational.")
 
     yield
 
