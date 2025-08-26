@@ -241,8 +241,8 @@ class AlphaRegimeStrategy(TradingStrategy):
             latest.get('low_vol_ma_short', 0), latest.get('low_vol_ma_long', 0), latest.get('adx', 0),
             self.p['low_vol_adx_threshold'])
         details['ma_cross_score'] = 1 if ma_short > ma_long else -1
-        details['macd_cross_score'] = 1 if previous.get('macd', 0) < previous.get('macd_signal', 0) and latest.get(
-            'macd', 0) > latest.get('macd_signal', 0) else -1 if previous.get('macd', 0) > previous.get('macd_signal',
+        details['macd_cross_score'] = 2 if previous.get('macd', 0) < previous.get('macd_signal', 0) and latest.get(
+            'macd', 0) > latest.get('macd_signal', 0) else -2 if previous.get('macd', 0) > previous.get('macd_signal',
                                                                                                         0) and latest.get(
             'macd', 0) < latest.get('macd_signal', 0) else 0
         details['rsi_score'] = 1 if previous.get('rsi', 50) < self.p['rsi_oversold'] and latest.get('rsi', 50) > self.p[
