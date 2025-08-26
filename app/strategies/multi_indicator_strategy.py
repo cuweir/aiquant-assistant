@@ -261,12 +261,12 @@ class AlphaRegimeStrategy(TradingStrategy):
         details['adx_ok'] = adx > adx_thresh
         details['slope_ok_long'] = details['slope'] > self.p['slope_min_threshold']
         details['slope_ok_short'] = details['slope'] < -self.p['slope_min_threshold']
-        details['rsi_value'] = latest.get('rsi');
+        details['rsi_value'] = latest.get('rsi')
         details['rsi_oversold_thresh'] = self.p.get('rsi_oversold');
         details['rsi_overbought_thresh'] = self.p.get('rsi_overbought')
-        details['macd_value'] = latest.get('macd');
+        details['macd_value'] = latest.get('macd')
         details['macd_signal_value'] = latest.get('macd_signal')
-        details['ma_short_value'] = ma_short;
+        details['ma_short_value'] = ma_short
         details['ma_long_value'] = ma_long
         return details
 
