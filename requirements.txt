@@ -8,7 +8,7 @@ openai
 httpx~=0.28.1
 google-generativeai
 pydantic~=2.11.5
-pandas_ta~=0.3.14b0
+pandas_ta==0.4.71b0
 protobuf~=5.29.5
 rich~=14.0.0
 SQLAlchemy~=2.0.41
