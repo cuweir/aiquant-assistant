@@ -2,7 +2,6 @@ import asyncio
 import pandas as pd
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func as sql_func, text
-import ccxt.async_support as ccxt
 from typing import List, Set
 import datetime
 import time
@@ -31,7 +30,6 @@ class BackfillService:
 
         self.symbols = symbols_to_backfill
         self.timeframes = timeframes_to_backfill
-        self.exchange = data_fetcher_instance.exchange
         print(f"BackfillService initialized for symbols: {self.symbols}, timeframes: {self.timeframes}")
 
     async def run_backfill(self, start_date_str: str):
@@ -65,8 +63,8 @@ class BackfillService:
             traceback.print_exc()
         finally:
             db.close()
-            await self.exchange.close()
-            print("Database connection and exchange connection closed.")
+            await data_fetcher_instance.close_exchange()
+            print("Database connection and data fetcher session closed.")
 
     def _get_or_create_symbols(self, db: Session) -> List[Symbol]:
         """Ensures all symbols for backfill exist in the database."""
@@ -118,7 +116,12 @@ class BackfillService:
                     f"Fetching chunk for {symbol.name}/{timeframe} starting from {pd.to_datetime(current_timestamp_ms, unit='ms', utc=True)}...")
 
                 # Fetch a chunk of OHLCV data
-                ohlcv = await self.exchange.fetch_ohlcv(symbol.name, timeframe, since=current_timestamp_ms, limit=limit)
+                ohlcv = await data_fetcher_instance.fetch_ohlcv(
+                    symbol=symbol.name,
+                    timeframe=timeframe,
+                    since=current_timestamp_ms,
+                    limit=limit,
+                )
 
                 if not ohlcv or len(ohlcv) <= 1:
                     print("No more historical data returned from the exchange. Backfill for this pair is complete.")

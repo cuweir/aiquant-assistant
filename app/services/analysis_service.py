@@ -15,11 +15,13 @@ from ..utils.formatters import format_price_dynamically
 from .backtest.db_data_fetcher import fetch_df_from_postgres
 from .parameter_manager import ParameterManager
 from ..strategies.multi_indicator_strategy import AlphaRegimeStrategy
+from ..strategies.ml_driven_strategy import MLDynamicDecisionStrategy
 from ..strategies.base_strategy import TradingStrategy
 from .trading_service import TradingService
 
 STRATEGY_MAP: Dict[str, Type[TradingStrategy]] = {
     "AlphaRegimeStrategy": AlphaRegimeStrategy,
+    "MLDynamicDecisionStrategy": MLDynamicDecisionStrategy,
 }
 
 

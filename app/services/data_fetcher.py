@@ -1,60 +1,84 @@
-from typing import Union
+from __future__ import annotations
 
-import ccxt.async_support as ccxt
-import pandas as pd
+import asyncio
+from typing import List
+
+import requests
+
 from ..core.config import settings
 
 
 class DataFetcher:
-    def __init__(self):
-        self.exchange_id = 'binance'
-        self.exchange_class = getattr(ccxt, self.exchange_id)
+    """Lightweight Binance Futures client using REST endpoints via requests."""
 
-        # [FINAL & CONSISTENT] Use a consolidated config dictionary.
-        exchange_config = {
-            'apiKey': settings.BINANCE_API_KEY,
-            'secret': settings.BINANCE_API_SECRET,
-            'enableRateLimit': True,
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/120.0.0.0 Safari/537.36"
+    BASE_URL = "https://fapi.binance.com"
+
+    def __init__(self) -> None:
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                )
             }
-        }
+        )
         if settings.PROXY_URL:
-            exchange_config['aiohttp_proxy'] = settings.PROXY_URL
+            self.session.proxies.update(
+                {
+                    "http": settings.PROXY_URL,
+                    "https": settings.PROXY_URL,
+                }
+            )
 
-        self.exchange = self.exchange_class(exchange_config)
+        proxy_message = (
+            f"with proxy ({settings.PROXY_URL})" if settings.PROXY_URL else "without proxy"
+        )
+        print(f"Initialized Binance Futures Data Fetcher {proxy_message}.")
 
-        proxy_message = f"with proxy ({settings.PROXY_URL})" if settings.PROXY_URL else "without proxy"
-        print(f"Initialized {self.exchange_id} Data Fetcher (Read-Only) {proxy_message}.")
+    async def fetch_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str = "1h",
+        since: int | None = None,
+        limit: int = 1000,
+    ) -> List[List[float]]:
+        """Fetch klines asynchronously by delegating to a thread."""
 
-    async def fetch_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> Union[pd.DataFrame, None]:
-        try:
-            # This is not a startup critical path, so existing error handling is sufficient.
-            # It will catch errors and return None, preventing tasks from crashing.
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            if ohlcv:
-                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                df.set_index('timestamp', inplace=True)
-                cols_to_convert = ['open', 'high', 'low', 'close', 'volume']
-                for col in cols_to_convert:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                df.dropna(subset=cols_to_convert, inplace=True)
-                return df
-            return None
-        except ccxt.NetworkError as e:
-            print(f"CCXT Network Error fetching {symbol}: {e}")
-        except ccxt.ExchangeError as e:
-            print(f"CCXT Exchange Error fetching {symbol}: {e}")
-        except Exception as e:
-            print(f"General Error fetching {symbol}: {e}")
-        return None
+        return await asyncio.to_thread(
+            self._fetch_ohlcv_sync,
+            symbol,
+            timeframe,
+            since,
+            limit,
+        )
 
-    async def close_exchange(self):
-        await self.exchange.close()
+    def _fetch_ohlcv_sync(
+        self,
+        symbol: str,
+        timeframe: str,
+        since: int | None,
+        limit: int,
+    ) -> List[List[float]]:
+        params = {
+            "symbol": symbol.replace("/", ""),
+            "interval": timeframe,
+            "limit": min(limit, 1500),
+        }
+        if since is not None:
+            params["startTime"] = since
+
+        url = f"{self.BASE_URL}/fapi/v1/klines"
+        response = self.session.get(url, params=params, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, list):
+            raise RuntimeError(f"Unexpected response payload: {data}")
+        return data
+
+    async def close_exchange(self) -> None:
+        await asyncio.to_thread(self.session.close)
 
 
-# Global instance
 data_fetcher_instance = DataFetcher()

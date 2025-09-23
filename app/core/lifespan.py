@@ -68,6 +68,14 @@ async def lifespan(app: FastAPI):
     await container.order_executor.initialize()
     print("Services initialized successfully.")
 
+    # Trigger an immediate data update so latest candles are available before first scheduled tick
+    try:
+        print("Running immediate data update on startup...")
+        await scheduled_data_update_task()
+        print("Initial data update completed.")
+    except Exception as e:
+        print(f"Initial data update failed during startup: {e}")
+
     # --- Scheduler Setup ---
     scheduler.add_job(
         scheduled_data_update_task,

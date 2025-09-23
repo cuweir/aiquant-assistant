@@ -85,48 +85,63 @@ class DataUpdaterService:
             latest_timestamp_in_db = self._get_latest_timestamp(db, symbol.id, timeframe)
 
             since = None
-            limit = 1000
             if latest_timestamp_in_db:
-                since = int(latest_timestamp_in_db.timestamp() * 1000)
-                limit = 100
+                # subtract 1ms to avoid skipping the next candle if exchange returns inclusive data
+                since = int((latest_timestamp_in_db.timestamp() * 1000)) - 1
 
-            print(
-                f"Fetching {symbol.name}/{timeframe}. Since: {pd.to_datetime(since, unit='ms', utc=True) if since else 'Beginning'}")
-            ohlcv = await data_fetcher_instance.exchange.fetch_ohlcv(
-                symbol=symbol.name, timeframe=timeframe, since=since, limit=limit
-            )
+            fetch_limit = 1000 if since is None else 1000
+            total_saved = 0
+            max_iterations = 20
 
-            if not ohlcv:
-                print(f"No new data returned for {symbol.name}/{timeframe}.")
-                return
-
-            new_records = []
-            for row in ohlcv:
-                open_time = pd.to_datetime(row[0], unit='ms', utc=True)
-
-                # [THE FIX] Skip the record if its open_time is less than or equal to the latest one we already have.
-                # This prevents attempting to insert a duplicate of the last known candle.
-                if latest_timestamp_in_db and open_time <= latest_timestamp_in_db:
-                    continue
-
-                new_records.append(
-                    HistoricalOhlcv(
-                        symbol_id=symbol.id,
-                        timeframe=timeframe,
-                        open_time=open_time.to_pydatetime(),
-                        open=row[1],
-                        high=row[2],
-                        low=row[3],
-                        close=row[4],
-                        volume=row[5]
-                    )
+            for _ in range(max_iterations):
+                print(
+                    f"Fetching {symbol.name}/{timeframe}. Since: {pd.to_datetime(since, unit='ms', utc=True) if since else 'Beginning'}")
+                ohlcv = await data_fetcher_instance.fetch_ohlcv(
+                    symbol=symbol.name,
+                    timeframe=timeframe,
+                    since=since,
+                    limit=fetch_limit,
                 )
 
-            if new_records:
+                if not ohlcv:
+                    print(f"No data returned for {symbol.name}/{timeframe}. Ending fetch loop.")
+                    break
+
+                new_records = []
+                for row in ohlcv:
+                    open_time = pd.to_datetime(row[0], unit='ms', utc=True)
+                    if latest_timestamp_in_db and open_time <= latest_timestamp_in_db:
+                        continue
+
+                    new_records.append(
+                        HistoricalOhlcv(
+                            symbol_id=symbol.id,
+                            timeframe=timeframe,
+                            open_time=open_time.to_pydatetime(),
+                            open=row[1],
+                            high=row[2],
+                            low=row[3],
+                            close=row[4],
+                            volume=row[5]
+                        )
+                    )
+
+                if not new_records:
+                    print(f"  > No new unique candles to save for {symbol.name}/{timeframe}. Ending fetch loop.")
+                    break
+
                 db.add_all(new_records)
-                print(f"  > Saved {len(new_records)} new candles for {symbol.name}/{timeframe}.")
+                total_saved += len(new_records)
+                latest_timestamp_in_db = pd.to_datetime(new_records[-1].open_time, utc=True)
+                since = int(latest_timestamp_in_db.timestamp() * 1000)
+
+                if len(ohlcv) < fetch_limit:
+                    break
+
+            if total_saved:
+                print(f"  > Saved {total_saved} new candles for {symbol.name}/{timeframe}.")
             else:
-                print(f"  > No new unique candles to save for {symbol.name}/{timeframe}.")
+                print(f"  > No new data persisted for {symbol.name}/{timeframe}.")
 
         except ccxt.NetworkError as e:
             print(f"CCXT Network Error for {symbol.name}/{timeframe}: {e}")

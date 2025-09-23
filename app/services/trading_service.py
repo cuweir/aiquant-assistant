@@ -1,6 +1,7 @@
 # app/services/trading_service.py
 
 import asyncio
+import numbers
 from typing import Dict, Any, Literal
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -20,6 +21,10 @@ class TradingService:
         signal = strategy_result.get("overall_signal")
         exit_signal = strategy_result.get("exit_signal")
 
+        if "action" in strategy_result:
+            await self._process_ml_action(db, symbol, strategy_result)
+            return
+
         open_position = db.query(Position).filter(Position.symbol_id == symbol.id, Position.is_open == True).first()
 
         if open_position:
@@ -37,6 +42,46 @@ class TradingService:
                 await self._handle_entry_logic(db, symbol, 'SHORT', strategy_result)
             else:
                 print(f"  > TradingService: Signal is '{signal}'. No action taken for {symbol.name}.")
+
+    async def _process_ml_action(self, db: Session, symbol: Symbol, strategy_result: Dict[str, Any]) -> None:
+        action = strategy_result.get("action")
+        open_position = db.query(Position).filter(Position.symbol_id == symbol.id, Position.is_open == True).first()
+
+        if not action:
+            print(f"  > ML-Strategy produced no actionable directive for {symbol.name}.")
+            return
+
+        confidence = strategy_result.get("action_confidence")
+        if isinstance(confidence, numbers.Real):
+            print(f"  > [ML Decision] {symbol.name}: action={action}, confidence={confidence:.2f}")
+        else:
+            print(f"  > [ML Decision] {symbol.name}: action={action}")
+
+        if open_position:
+            if action in {"STAY_FLAT", "RANGE_MEAN_REVERT"}:
+                print(f"  > ML directive is {action}. Closing existing position for {symbol.name} to flatten exposure.")
+                await self._handle_exit_logic(db, symbol, open_position)
+                open_position = None
+            elif action == "ENTER_LONG" and open_position.position_side == 'SHORT':
+                print(f"  > ML directive flips from SHORT to LONG for {symbol.name}. Closing current short.")
+                await self._handle_exit_logic(db, symbol, open_position)
+                open_position = None
+            elif action == "ENTER_SHORT" and open_position.position_side == 'LONG':
+                print(f"  > ML directive flips from LONG to SHORT for {symbol.name}. Closing current long.")
+                await self._handle_exit_logic(db, symbol, open_position)
+                open_position = None
+            else:
+                print(f"  > Holding existing {open_position.position_side} position for {symbol.name} under ML directive '{action}'.")
+                return
+
+        if action == "ENTER_LONG":
+            await self._handle_entry_logic(db, symbol, 'LONG', strategy_result)
+        elif action == "ENTER_SHORT":
+            await self._handle_entry_logic(db, symbol, 'SHORT', strategy_result)
+        elif action in {"LEAN_LONG", "LEAN_SHORT", "RANGE_MEAN_REVERT", "STAY_FLAT"}:
+            print(f"  > ML directive '{action}' does not trigger automated order placement for {symbol.name}.")
+        else:
+            print(f"  > Unknown ML directive '{action}' for {symbol.name}. No action taken.")
 
     async def _handle_entry_logic(self, db: Session, symbol: Symbol, side: Literal['LONG', 'SHORT'],
                                   strategy_result: Dict[str, Any]):
