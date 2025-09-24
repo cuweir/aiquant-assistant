@@ -1,13 +1,20 @@
 #!/usr/bin/env python
 """Download Binance perpetual funding rates and store them as a CSV for feature generation."""
 
+from __future__ import annotations
+
 import argparse
 import os
+import sys
 from pathlib import Path
 from typing import List, Optional
 
 import ccxt
 import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,7 +54,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_proxy(proxy_arg: Optional[str]) -> Optional[dict]:
-    candidate = proxy_arg or os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    candidate = (
+        proxy_arg
+        or os.environ.get("HTTPS_PROXY")
+        or os.environ.get("https_proxy")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("http_proxy")
+    )
     if not candidate:
         return None
     return {"http": candidate, "https": candidate}
@@ -120,27 +133,17 @@ def save_to_csv(symbol: str, records: List[dict], output_dir: Path) -> Path:
 
 def main() -> None:
     args = parse_args()
-    until_ms = to_milliseconds(args.until) if args.until else None
-    since_ms = to_milliseconds(args.since)
 
+    print(f"Fetching funding rates for {args.symbol} starting {args.since}")
     proxies = resolve_proxy(args.proxy)
-    exchange_config = {"enableRateLimit": True}
-    if proxies:
-        exchange_config["proxies"] = proxies
-        exchange_config["aiohttp_proxy"] = proxies["https"]
+    exchange = ccxt.binance({"enableRateLimit": True, "options": {"defaultType": "future"}, "proxies": proxies})
 
-    exchange_class = ccxt.binanceusdm
-    exchange = exchange_class(exchange_config)
-    exchange.load_markets()
-    try:
-        records = fetch_funding_rates(exchange, args.symbol, since_ms, until_ms, args.chunk)
-        file_path = save_to_csv(args.symbol, records, args.output_dir)
-        print(f"Saved {len(records)} funding rate records to {file_path}")
-    finally:
-        # ccxt sync exchanges expose a `session` (requests.Session) we can close safely
-        session = getattr(exchange, "session", None)
-        if session:
-            session.close()
+    since_ms = to_milliseconds(args.since)
+    until_ms = to_milliseconds(args.until) if args.until else None
+
+    records = fetch_funding_rates(exchange, args.symbol, since_ms, until_ms, args.chunk)
+    path = save_to_csv(args.symbol, records, args.output_dir)
+    print(f"Saved {len(records)} funding rate records to {path}")
 
 
 if __name__ == "__main__":

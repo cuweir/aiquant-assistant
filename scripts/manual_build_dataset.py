@@ -1,10 +1,17 @@
 #!/usr/bin/env python
 """Helper script to generate a dataset bundle for model training."""
 
+from __future__ import annotations
+
 import argparse
+import sys
 from pathlib import Path
 
 import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 from app.core.config import settings
 from app.ml_pipeline.dataset_builder import DatasetBuilder, save_bundle
@@ -71,6 +78,12 @@ def main() -> None:
             ),
             FeatureSourceSpec(
                 name="open_interest",
+                kind=FeatureSourceKind.MARKET_MICRO,
+                timeframe=args.timeframe,
+                params={"symbol": args.symbol},
+            ),
+            FeatureSourceSpec(
+                name="market_metrics",
                 kind=FeatureSourceKind.MARKET_MICRO,
                 timeframe=args.timeframe,
                 params={"symbol": args.symbol},

@@ -1,14 +1,21 @@
 #!/usr/bin/env python
 """Train the ML dynamic decision model from a saved dataset bundle."""
 
+from __future__ import annotations
+
 import argparse
+import sys
 from pathlib import Path
 from typing import Dict
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
 from app.ml_pipeline.dataset_builder import load_bundle
+from app.ml_pipeline.model_registry import save_model
 from app.ml_pipeline.schemas import FeatureConfig, LabelConfig
 from app.ml_pipeline.trainer import ModelTrainer, TrainingConfig
-from app.ml_pipeline.model_registry import save_model
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,7 +78,7 @@ def main() -> None:
 
     print("Model training complete.")
     print(f"  > Saved model to: {model_dir}")
-    print(f"  > Metrics:")
+    print("  > Metrics:")
     for key, value in metrics.items():
         print(f"    - {key}: {value}")
 

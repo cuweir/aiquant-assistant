@@ -5,17 +5,20 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import datetime, UTC
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import requests
 import pandas as pd
+import requests
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 BINANCE_FUTURES_BASE = "https://fapi.binance.com"
 OPEN_INTEREST_ENDPOINT = "/futures/data/openInterestHist"
-
 
 PERIOD_TO_MS = {
     "5m": 5 * 60 * 1000,
@@ -113,7 +116,6 @@ def fetch_open_interest(
             break
         cursor = first_ts - step
 
-    # Filter and deduplicate
     filtered = []
     seen = set()
     for row in collected:
@@ -135,9 +137,7 @@ def normalize_dataframe(rows: List[Dict[str, str]]) -> pd.DataFrame:
         raise RuntimeError("No open interest records fetched; nothing to save.")
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     df.set_index("timestamp", inplace=True)
-    numeric_cols = [
-        "sumOpenInterest", "sumOpenInterestValue", "openInterest",
-    ]
+    numeric_cols = ["sumOpenInterest", "sumOpenInterestValue", "openInterest"]
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -164,16 +164,15 @@ def save_to_csv(df: pd.DataFrame, symbol: str, output_dir: Path) -> Path:
 
 def main() -> None:
     args = parse_args()
-    since_ms = to_timestamp(args.since)
-    until_ms = to_timestamp(args.until)
-    proxy = resolve_proxy(args.proxy)
 
+    proxy = resolve_proxy(args.proxy)
     session = requests.Session()
-    session.params = {}
     if proxy:
         session.proxies.update({"http": proxy, "https": proxy})
-    session.headers.update({"Accept": "application/json"})
-    session.timeout = args.timeout
+
+    since_ms = to_timestamp(args.since)
+    until_ms = to_timestamp(args.until)
+
     try:
         rows = fetch_open_interest(
             session,
@@ -187,9 +186,10 @@ def main() -> None:
         )
     finally:
         session.close()
+
     df = normalize_dataframe(rows)
     path = save_to_csv(df, args.symbol, args.output_dir)
-    print(f"Saved {len(df)} open interest rows to {path}")
+    print(f"Saved {len(df)} rows to {path}")
 
 
 if __name__ == "__main__":

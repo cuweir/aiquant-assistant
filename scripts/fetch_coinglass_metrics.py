@@ -6,10 +6,15 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import os
+import sys
 from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 from app.services.coinglass_client import CoinglassClient
 
@@ -153,7 +158,6 @@ def main() -> None:
     output_path = output_dir / f"{sanitized_symbol}.csv"
 
     merged = merge_with_existing(df, output_path, args.overwrite)
-    # Ensure deterministic column ordering for downstream consumers.
     existing_order = list(merged.columns)
     priority_order = {
         "long_short_ratio": 0,

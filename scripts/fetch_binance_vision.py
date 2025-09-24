@@ -20,7 +20,13 @@ FALLBACK_URL = "https://data.binance.vision"
 
 
 class DatasetSpec:
-    def __init__(self, templates: Dict[str, str], requires_interval: bool, rename: Dict[str, str], value_column: str):
+    def __init__(
+        self,
+        templates: Dict[str, str],
+        requires_interval: bool,
+        rename: Dict[str, str],
+        value_column: str,
+    ):
         self.templates = templates
         self.requires_interval = requires_interval
         self.rename = rename
@@ -30,8 +36,8 @@ class DatasetSpec:
 DATASETS: Dict[str, DatasetSpec] = {
     "open_interest": DatasetSpec(
         templates={
-            "daily": "/data/futures/um/daily/openInterest/{symbol}/{symbol}-openInterest-{suffix}.zip",
-            "monthly": "/data/futures/um/monthly/openInterest/{symbol}/{symbol}-openInterest-{suffix}.zip",
+            "daily": "/futures/um/daily/openInterest/{symbol}/{symbol}-openInterest-{suffix}.zip",
+            "monthly": "/futures/um/monthly/openInterest/{symbol}/{symbol}-openInterest-{suffix}.zip",
         },
         requires_interval=False,
         rename={
@@ -41,14 +47,45 @@ DATASETS: Dict[str, DatasetSpec] = {
         },
         value_column="open_interest",
     ),
+    "metrics": DatasetSpec(
+        templates={
+            "daily": "/futures/um/daily/metrics/{symbol}/{symbol}-metrics-{suffix}.zip",
+            "monthly": "/futures/um/monthly/metrics/{symbol}/{symbol}-metrics-{suffix}.zip",
+        },
+        requires_interval=False,
+        rename={
+            "create_time": "timestamp",
+            "sum_open_interest": "open_interest",
+            "sum_open_interest_value": "open_interest_value",
+            "sum_taker_long_short_vol_ratio": "taker_long_short_vol_ratio",
+            "sum_toptrader_long_short_ratio": "top_trader_long_short_ratio",
+            "sum_long_short_ratio": "global_long_short_ratio",
+            "count_toptrader_long_short_ratio": "top_trader_long_short_ratio_count",
+            "count_long_short_ratio": "global_long_short_ratio_count",
+        },
+        value_column="open_interest",
+    ),
+    "funding_rate": DatasetSpec(
+        templates={
+            "daily": "/futures/um/daily/fundingRate/{symbol}/{symbol}-fundingRate-{suffix}.zip",
+            "monthly": "/futures/um/monthly/fundingRate/{symbol}/{symbol}-fundingRate-{suffix}.zip",
+        },
+        requires_interval=False,
+        rename={
+            "fundingTime": "timestamp",
+            "fundingRate": "funding_rate",
+            "markPrice": "mark_price",
+        },
+        value_column="funding_rate",
+    ),
     "long_short_ratio": DatasetSpec(
         templates={
             "daily": (
-                "/data/futures/um/daily/metrics/globalLongShortRatio/{symbol}/"
+                "/futures/um/daily/metrics/globalLongShortRatio/{symbol}/"
                 "{symbol}-globalLongShortAccountRatio-{interval}-{suffix}.zip"
             ),
             "monthly": (
-                "/data/futures/um/monthly/metrics/globalLongShortRatio/{symbol}/"
+                "/futures/um/monthly/metrics/globalLongShortRatio/{symbol}/"
                 "{symbol}-globalLongShortAccountRatio-{interval}-{suffix}.zip"
             ),
         },
@@ -71,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-date", required=True, help="End date (YYYY-MM-DD)")
     parser.add_argument("--interval", default="1h", help="Interval (needed for long_short_ratio)")
     parser.add_argument("--frequency", choices=["daily", "monthly"], default="daily", help="Archive frequency")
-    parser.add_argument("--output-dir", type=Path, default=Path("data/external/binance"), help="Base output directory")
+    parser.add_argument("--output-dir", type=Path, default=Path("../data/external/binance"), help="Base output directory")
     parser.add_argument("--proxy", type=str, default=None, help="Override proxy (use 'none' to disable)")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing CSV instead of appending")
     parser.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout in seconds")
@@ -103,6 +140,9 @@ def build_session(proxy: str | None) -> requests.Session:
     session = requests.Session()
     if proxy:
         session.proxies.update({"http": proxy, "https": proxy})
+        session.trust_env = False
+    else:
+        session.trust_env = False
     return session
 
 

@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import datetime
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import requests
 import pandas as pd
-from datetime import datetime, UTC
+import requests
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 BINANCE_FUTURES_BASE = "https://fapi.binance.com"
 LONG_SHORT_ENDPOINT = "/futures/data/globalLongShortAccountRatio"
@@ -126,7 +129,9 @@ def normalize_dataframe(rows: List[Dict[str, str]]) -> pd.DataFrame:
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     df.set_index("timestamp", inplace=True)
     numeric_cols = [
-        "longAccount", "longShortRatio", "shortAccount",
+        "longAccount",
+        "longShortRatio",
+        "shortAccount",
     ]
     for col in numeric_cols:
         if col in df.columns:
@@ -141,11 +146,7 @@ def normalize_dataframe(rows: List[Dict[str, str]]) -> pd.DataFrame:
         },
         inplace=True,
     )
-    keep_cols = [
-        col
-        for col in ["long_short_ratio", "long_account_ratio", "short_account_ratio"]
-        if col in df.columns
-    ]
+    keep_cols = [col for col in ["long_short_ratio", "long_account_ratio", "short_account_ratio"] if col in df.columns]
     return df[keep_cols]
 
 
@@ -158,21 +159,31 @@ def save_to_csv(df: pd.DataFrame, symbol: str, output_dir: Path) -> Path:
 
 def main() -> None:
     args = parse_args()
-    since_ms = to_timestamp(args.since)
-    until_ms = to_timestamp(args.until)
-    proxy = resolve_proxy(args.proxy)
 
+    proxy = resolve_proxy(args.proxy)
     session = requests.Session()
     if proxy:
         session.proxies.update({"http": proxy, "https": proxy})
-    session.headers.update({"Accept": "application/json"})
+
+    since_ms = to_timestamp(args.since)
+    until_ms = to_timestamp(args.until)
+
     try:
-        rows = fetch_long_short_ratio(session, args.symbol, args.period, since_ms, until_ms, args.chunk, args.timeout)
+        rows = fetch_long_short_ratio(
+            session,
+            args.symbol,
+            args.period,
+            since_ms,
+            until_ms,
+            args.chunk,
+            args.timeout,
+        )
     finally:
         session.close()
+
     df = normalize_dataframe(rows)
     path = save_to_csv(df, args.symbol, args.output_dir)
-    print(f"Saved {len(df)} long/short ratio rows to {path}")
+    print(f"Saved {len(df)} rows to {path}")
 
 
 if __name__ == "__main__":
