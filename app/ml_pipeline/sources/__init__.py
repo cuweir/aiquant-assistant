@@ -4,6 +4,7 @@ from .base import FeatureSource, FeatureSourceRegistry, register_source
 from .technical import TechnicalIndicatorSource
 from .web3 import (
     FundingRateSource,
+    MarketEventsSource,
     MarketMetricsSource,
     OpenInterestSource,
     SentimentIndexSource,
@@ -18,4 +19,5 @@ __all__ = [
     "OpenInterestSource",
     "SentimentIndexSource",
     "MarketMetricsSource",
+    "MarketEventsSource",
 ]

@@ -119,7 +119,34 @@ class FundingRateSource(_ExternalDataMixin, FeatureSource):
             constant = params.get("default", 0.0)
             series = pd.Series(constant, index=price_df.index)
         aligned = self._align_to_index(series, price_df.index)
-        return pd.DataFrame({"funding_rate": aligned})
+        features = pd.DataFrame({"funding_rate": aligned}, index=price_df.index)
+
+        price_close = price_df.get("close")
+        if price_close is not None:
+            price_close = price_close.replace(0, np.nan).ffill().bfill()
+        price_return = None
+        if price_close is not None:
+            price_return = price_close.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan)
+
+        features["funding_rate_change_1h"] = features["funding_rate"].diff()
+        features["funding_rate_abs_change_1h"] = features["funding_rate_change_1h"].abs()
+        features["funding_rate_ma_6h"] = features["funding_rate"].rolling(6, min_periods=3).mean()
+        rolling_fr = features["funding_rate"].rolling(24, min_periods=6)
+        features["funding_rate_zscore_24h"] = (features["funding_rate"] - rolling_fr.mean()) / rolling_fr.std()
+
+        if price_return is not None:
+            features["funding_price_return"] = features["funding_rate"] * price_return
+
+        quantile_window = features["funding_rate"].rolling(48, min_periods=12)
+        upper = quantile_window.quantile(0.9)
+        lower = quantile_window.quantile(0.1)
+        features["funding_rate_high_event"] = (features["funding_rate"] >= upper).astype(float)
+        features["funding_rate_low_event"] = (features["funding_rate"] <= lower).astype(float)
+        features["funding_rate_sign"] = np.sign(features["funding_rate"])
+
+        features = features.replace([np.inf, -np.inf], np.nan)
+        features = features.ffill().bfill()
+        return features
 
 
 @register_source("open_interest")
@@ -204,6 +231,13 @@ class MarketMetricsSource(_ExternalDataMixin, FeatureSource):
 
         aligned = frame.reindex(price_df.index).ffill().bfill()
 
+        price_close = price_df.get("close")
+        if price_close is not None:
+            price_close = price_close.replace(0, np.nan).ffill().bfill()
+        price_volume = price_df.get("volume")
+        if price_volume is not None:
+            price_volume = price_volume.replace(0, np.nan).ffill().bfill()
+
         features = pd.DataFrame(index=price_df.index)
         oi = aligned.get("open_interest")
         oi_val = aligned.get("open_interest_value")
@@ -213,15 +247,20 @@ class MarketMetricsSource(_ExternalDataMixin, FeatureSource):
 
         if oi is not None:
             oi = oi.replace(0, np.nan)
-            features["oi_pct_change_1h"] = oi.pct_change()
-            features["oi_pct_change_6h"] = oi.pct_change(6)
+            features["oi_pct_change_1h"] = oi.pct_change(fill_method=None)
+            features["oi_pct_change_6h"] = oi.pct_change(6, fill_method=None)
             features["oi_log_diff_24h"] = np.log(oi).diff(24)
             rolling = oi.rolling(24, min_periods=6)
             features["oi_zscore_24h"] = (oi - rolling.mean()) / rolling.std()
+            features["oi_volatility_24h"] = rolling.std() / rolling.mean()
+            if price_volume is not None:
+                features["oi_to_volume_ratio"] = (oi / price_volume).replace([np.inf, -np.inf], np.nan)
 
         if oi_val is not None:
             oi_val = oi_val.replace(0, np.nan)
-            features["oi_value_pct_change_1h"] = oi_val.pct_change()
+            features["oi_value_pct_change_1h"] = oi_val.pct_change(fill_method=None)
+            if price_close is not None:
+                features["oi_value_to_price"] = (oi_val / price_close).replace([np.inf, -np.inf], np.nan)
 
         if top_ratio is not None and global_ratio is not None:
             spread = top_ratio - global_ratio
@@ -230,10 +269,136 @@ class MarketMetricsSource(_ExternalDataMixin, FeatureSource):
             features["top_trader_ls_change_1h"] = top_ratio.diff()
             features["global_ls_change_1h"] = global_ratio.diff()
             features["log_global_ls_ratio"] = np.log(global_ratio.replace(0, np.nan))
+            features["top_vs_global_rel"] = (top_ratio / global_ratio.replace(0, np.nan)) - 1
+            global_roll = global_ratio.rolling(24, min_periods=6)
+            features["global_ls_zscore_24h"] = (global_ratio - global_roll.mean()) / global_roll.std()
 
         if taker_ratio is not None:
             features["taker_ls_delta_1h"] = taker_ratio.diff()
             features["taker_ls_ma_6h"] = taker_ratio.rolling(6, min_periods=3).mean()
+            taker_roll = taker_ratio.rolling(24, min_periods=6)
+            features["taker_ls_zscore_24h"] = (taker_ratio - taker_roll.mean()) / taker_roll.std()
+
+        features = features.replace([np.inf, -np.inf], np.nan)
+        features = features.ffill().bfill()
+        return features
+
+
+@register_source("market_events")
+class MarketEventsSource(_ExternalDataMixin, FeatureSource):
+    """Generates event-style features combining funding, open interest, and sentiment ratios."""
+
+    def compute(self, price_df: pd.DataFrame) -> pd.DataFrame:
+        params: Dict[str, object] = self.spec.params or {}
+        symbol = params.get("symbol")
+        providers = self._normalize_provider_priority(params.get("provider_priority"))
+
+        metrics_path = self._find_default_csv(symbol, "metrics", providers)
+        if not metrics_path:
+            raise FileNotFoundError("No metrics CSV available for market_events feature source")
+        metrics_df = self._load_external_frame(metrics_path)
+
+        funding_path = self._find_default_csv(symbol, "funding", providers)
+        if not funding_path:
+            raise FileNotFoundError("No funding CSV available for market_events feature source")
+        funding_series = self._load_external_csv(funding_path)
+
+        metrics_aligned = metrics_df.reindex(price_df.index).ffill().bfill()
+        funding_aligned = funding_series.reindex(price_df.index).ffill().bfill()
+
+        features = pd.DataFrame(index=price_df.index)
+
+        oi = metrics_aligned.get("open_interest")
+        top_ratio = metrics_aligned.get("top_trader_long_short_ratio")
+        global_ratio = metrics_aligned.get("global_long_short_ratio")
+        taker_ratio = metrics_aligned.get("taker_long_short_vol_ratio")
+
+        oi_pct_change = None
+        if oi is not None:
+            oi = oi.replace(0, np.nan)
+            oi_pct_change = oi.pct_change(fill_method=None)
+            if oi_pct_change.notna().any():
+                q_high = oi_pct_change.quantile(0.9)
+                q_low = oi_pct_change.quantile(0.1)
+                features["event_oi_surge"] = (oi_pct_change > q_high).astype(float)
+                features["event_oi_drop"] = (oi_pct_change < q_low).astype(float)
+
+        funding = funding_aligned.replace([-np.inf, np.inf], np.nan)
+        funding_high = funding.quantile(0.9)
+        funding_low = funding.quantile(0.1)
+        if pd.isna(funding_high):
+            funding_high = funding.max()
+        if pd.isna(funding_low):
+            funding_low = funding.min()
+        features["event_funding_high"] = (funding >= funding_high).astype(float)
+        features["event_funding_low"] = (funding <= funding_low).astype(float)
+        features["event_funding_abs"] = funding.abs()
+        features["event_funding_sign"] = np.sign(funding)
+        features["event_funding_volatility_24h"] = funding.rolling(24, min_periods=6).std()
+
+        if oi_pct_change is not None:
+            interaction = (funding * oi_pct_change).replace([-np.inf, np.inf], np.nan)
+            features["event_funding_oi_interaction"] = interaction
+            features["event_long_crowding"] = ((funding >= funding_high) & (oi_pct_change > 0)).astype(float)
+            features["event_short_crowding"] = ((funding <= funding_low) & (oi_pct_change < 0)).astype(float)
+
+        if top_ratio is not None and global_ratio is not None:
+            spread = top_ratio - global_ratio
+            spread_abs = spread.abs()
+            spread_threshold = spread_abs.quantile(0.9)
+            if pd.isna(spread_threshold) or spread_threshold == 0:
+                spread_threshold = spread_abs.max()
+            features["event_spread_top_vs_global"] = spread
+            features["event_top_vs_global_extreme"] = (spread_abs >= spread_threshold).astype(float)
+            features["event_spread_sign"] = np.sign(spread)
+            features["event_spread_change_1h"] = spread.diff()
+            if oi_pct_change is not None:
+                features["event_spread_oi_interaction"] = (spread * oi_pct_change).replace([-np.inf, np.inf], np.nan)
+
+        if taker_ratio is not None:
+            taker_change = taker_ratio.diff()
+            features["event_taker_ratio_change_1h"] = taker_change
+            surge_threshold = taker_change.quantile(0.9)
+            drop_threshold = taker_change.quantile(0.1)
+            if pd.isna(surge_threshold):
+                surge_threshold = taker_change.max()
+            if pd.isna(drop_threshold):
+                drop_threshold = taker_change.min()
+            features["event_taker_surge"] = (taker_change > surge_threshold).astype(float)
+            features["event_taker_drop"] = (taker_change < drop_threshold).astype(float)
+
+        price_close = price_df.get("close")
+        price_volume = price_df.get("volume")
+        price_return = None
+        if price_close is not None:
+            price_close = price_close.replace(0, np.nan).ffill().bfill()
+            price_return = price_close.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan)
+            features["event_price_return_1h"] = price_return
+            features["event_price_return_6h"] = price_close.pct_change(6, fill_method=None).replace([np.inf, -np.inf], np.nan)
+            price_roll = price_return.rolling(24, min_periods=6)
+            features["event_price_volatility_24h"] = price_roll.std()
+            features["event_price_zscore_24h"] = (price_return - price_roll.mean()) / price_roll.std()
+            features["event_funding_price_positive"] = ((funding >= funding_high) & (price_return > 0)).astype(float)
+            features["event_funding_price_negative"] = ((funding <= funding_low) & (price_return < 0)).astype(float)
+            features["event_funding_price_interaction"] = (funding * price_return).replace([-np.inf, np.inf], np.nan)
+
+        if price_volume is not None:
+            price_volume = price_volume.replace(0, np.nan).ffill().bfill()
+            volume_pct_change = price_volume.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan)
+            volume_roll = price_volume.rolling(24, min_periods=6)
+            volume_zscore = (price_volume - volume_roll.mean()) / volume_roll.std()
+            features["event_volume_pct_change_1h"] = volume_pct_change
+            features["event_volume_zscore_24h"] = volume_zscore
+            if oi_pct_change is not None:
+                features["event_volume_oi_interaction"] = (volume_pct_change * oi_pct_change).replace([-np.inf, np.inf], np.nan)
+            if price_return is not None:
+                features["event_volume_price_interaction"] = (volume_pct_change * price_return).replace([-np.inf, np.inf], np.nan)
+
+        if price_return is not None and oi_pct_change is not None:
+            features["event_price_oi_interaction"] = (price_return * oi_pct_change).replace([-np.inf, np.inf], np.nan)
+            same_sign = ((price_return > 0) & (oi_pct_change > 0)).astype(float)
+            opp_sign = ((price_return < 0) & (oi_pct_change < 0)).astype(float)
+            features["event_price_oi_same_direction"] = same_sign - opp_sign
 
         features = features.replace([np.inf, -np.inf], np.nan)
         features = features.ffill().bfill()

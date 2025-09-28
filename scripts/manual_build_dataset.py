@@ -88,6 +88,12 @@ def main() -> None:
                 timeframe=args.timeframe,
                 params={"symbol": args.symbol},
             ),
+            FeatureSourceSpec(
+                name="market_events",
+                kind=FeatureSourceKind.MARKET_MICRO,
+                timeframe=args.timeframe,
+                params={"symbol": args.symbol},
+            ),
             FeatureSourceSpec(name="sentiment_index", kind=FeatureSourceKind.SENTIMENT, timeframe=args.timeframe),
         ],
         lags=[1, 4, 12],
